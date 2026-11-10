@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "title": "Moments",
+    "description": "A native-feeling local notes workspace with quick capture, tags, search, review, images, backup and a thirty-day trash."
+  },
+  "panel": {
+    "label": "Moments"
+  },
+  "empty": {
+    "workspaceTitle": "This workspace is empty so far",
+    "workspaceHint": "Everything you write is saved in this workspace. Add #tags as you type to file a note, and #tags/subtags to nest it.",
+    "workspaceAction": "Write the first note",
+    "filteredTitle": "No notes match these filters",
+    "filteredHint": "The keyword, the date range and the tag all narrow the same timeline — drop one and the rest comes back.",
+    "filteredAction": "Clear filters",
+    "reviewEmptyTitle": "Nothing to review yet",
+    "reviewEmptyHint": "A review draws from notes you have already written. Add a few and they will come back at random.",
+    "onThisDayEmptyTitle": "No notes from this day in past years",
+    "onThisDayEmptyHint": "Nothing was written on this date in an earlier year — keep writing, and next year this day will bring a surprise."
+  }
+}

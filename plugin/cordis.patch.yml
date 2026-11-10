@@ -1,0 +1,7 @@
+- insert:
+    - id: moments-notes
+      name: 'dsh-moments-notes'
+      inject:
+        - tools
+        - connection
+        - profileContext

@@ -1,0 +1,6 @@
+# The desktop float is built per machine.
+plugin/native/bin/
+
+node_modules/
+.DS_Store
+*.log

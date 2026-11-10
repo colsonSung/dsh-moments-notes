@@ -1,0 +1,67 @@
+{
+  "name": "dsh-moments-notes",
+  "version": "3.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Moments is a local-first notes workspace for DeepSeek Harness, and a native design editor: an agent-authorable canvas with a design engine (tokens, auto layout, components, vector paths, export), real Figma / FigJam import, and the capture float that stays on top of every app.",
+  "license": "MIT",
+  "author": "Ethan Song",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/colsonSung/dsh-moments-notes.git"
+  },
+  "homepage": "https://github.com/colsonSung/dsh-moments-notes#readme",
+  "bugs": {
+    "url": "https://github.com/colsonSung/dsh-moments-notes/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "notes",
+    "markdown",
+    "pkm",
+    "canvas",
+    "design",
+    "figma",
+    "design-tokens"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "lib/*.js",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "native/build.sh",
+    "native/*.swift",
+    "native/README.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    }
+  },
+  "dependencies": {
+    "openfig-core": "^0.4.1"
+  }
+}

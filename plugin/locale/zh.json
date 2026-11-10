@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "title": "Moments",
+    "description": "原生协调的本地笔记工作区：层级标签、搜索、每日回顾、统计、图片、数据备份与 30 天回收站。"
+  },
+  "panel": {
+    "label": "Moments"
+  },
+  "empty": {
+    "workspaceTitle": "这个工作区暂时还是空的",
+    "workspaceHint": "写下的一切都保存在这个工作区里。边写边加 #标签 就能归档，用 #标签/子标签 还能继续分层。",
+    "workspaceAction": "写第一条笔记",
+    "filteredTitle": "没有笔记符合当前筛选",
+    "filteredHint": "关键词、日期范围和标签筛的是同一条时间线——去掉一个，其余笔记就回来了。",
+    "filteredAction": "清除筛选",
+    "reviewEmptyTitle": "还没有可以回顾的笔记",
+    "reviewEmptyHint": "回顾来自你已经写下的笔记。先写几条，它们之后会随机回到你面前。",
+    "onThisDayEmptyTitle": "往年这一天没有笔记",
+    "onThisDayEmptyHint": "往年的今天你没有留下什么——继续记录，明年的今天会带来一个惊喜。"
+  }
+}
