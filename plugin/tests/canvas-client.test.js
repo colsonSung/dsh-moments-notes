@@ -4251,6 +4251,44 @@ test('a small drag on a selected path moves the whole shape, not one of its poin
   }
 })
 
+test('a filled node carries ink that reads on its own fill, not the theme ink', async () => {
+  // The report: in the dark theme a white frame imported from FigJam showed
+  // white text, because text with no stored colour inherited the theme ink.
+  const document = {
+    version: 1, id: 'c1', title: 'Ink', createdAt: 1, updatedAt: 2,
+    camera: { x: 0, y: 0, zoom: 1 },
+    nodes: [
+      { id: 'onWhite', type: 'text', x: 10, y: 10, w: 200, h: 30, text: 'dark ink on white', fill: '#ffffff' },
+      { id: 'onDark', type: 'text', x: 10, y: 60, w: 200, h: 30, text: 'light ink on night', fill: '#0f172a' },
+      { id: 'explicit', type: 'text', x: 10, y: 110, w: 200, h: 30, text: 'stored ink', fill: '#ffffff', textColor: '#c81e1e' },
+      { id: 'bare', type: 'text', x: 10, y: 160, w: 200, h: 30, text: 'no fill, theme ink' },
+      { id: 'box', type: 'shape', shape: 'rect', x: 10, y: 210, w: 160, h: 40, fill: '#f9e8a0', text: 'on amber' },
+      // A text node inside a white frame has no fill of its own: the frame
+      // behind it is the surface its ink has to read on.
+      {
+        id: 'frame', type: 'frame', x: 0, y: 300, w: 300, h: 120, fill: '#ffffff', members: ['inFrame'],
+      },
+      { id: 'inFrame', type: 'text', x: 20, y: 320, w: 240, h: 30, text: 'text on the white frame' },
+    ],
+    edges: [],
+  }
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: document, c2: EMPTY_DOCUMENT } }) })
+  try {
+    renderMain(plugin)
+    await enterCanvasMode(plugin)
+    const ink = (id) => nodeById(plugin, id).props.style.color
+    assert.equal(ink('onWhite'), 'var(--mm-ink-on-light)', 'a white fill gets dark ink')
+    assert.equal(ink('onDark'), 'var(--mm-ink-on-dark)', 'a night fill gets light ink')
+    assert.equal(ink('explicit'), '#c81e1e', 'a stored colour always wins')
+    assert.equal(ink('bare'), undefined, 'a node with no fill follows the theme')
+    assert.equal(ink('box'), 'var(--mm-ink-on-light)', 'a shape with a light fill carries dark ink too')
+    assert.equal(ink('inFrame'), 'var(--mm-ink-on-light)', 'a fill-less node reads the frame behind it')
+  } finally {
+    plugin.restore()
+  }
+})
+
+
 test('the tool bar names the tool under the pointer and says what it does', async () => {
   const plugin = await loadMomentsClient({ routes: canvasRoutes() })
   try {

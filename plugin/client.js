@@ -2519,6 +2519,27 @@ window.__ModuleLoader__.load({
       display: '"SF Pro Display", Inter, "Helvetica Neue", system-ui, sans-serif',
     })
 
+    /**
+     * The ink a filled node can carry.
+     *
+     * Text with no stored colour used to inherit the theme's label colour, so a
+     * white frame imported from FigJam got white text in the dark theme: the
+     * fill said "paper", the ink said "night". A fill that is set decides its
+     * own ink; only a node with no fill at all follows the theme.
+     */
+    function canvasInkOnFill(fill) {
+      if (typeof fill !== 'string') return null;
+      const hex = fill.trim().replace(/^#/, '');
+      const full = hex.length === 3 ? hex.split('').map((part) => part + part).join('') : hex;
+      if (!/^[0-9a-f]{6}$/i.test(full)) return null;
+      const channel = (offset) => {
+        const value = parseInt(full.slice(offset, offset + 2), 16) / 255;
+        return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      };
+      const luminance = 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+      return luminance > 0.45 ? 'var(--mm-ink-on-light)' : 'var(--mm-ink-on-dark)';
+    }
+
     /** A stored shadow colour as an rgba() literal the browser can paint. */
     function canvasShadowColor(shadow) {
       const alpha = shadow?.opacity === undefined || shadow?.opacity === null ? 1 : shadow.opacity
@@ -4959,6 +4980,10 @@ window.__ModuleLoader__.load({
         const style = {};
         if (node.fontSize) style.fontSize = `${node.fontSize}px`;
         if (node.textColor) style.color = node.textColor;
+        else {
+          const ink = canvasInkOnFill(fillBehind.get(node.id) || node.fill);
+          if (ink) style.color = ink;
+        }
         if (node.fontFamily && CANVAS_FONT_STACKS[node.fontFamily]) style.fontFamily = CANVAS_FONT_STACKS[node.fontFamily];
         if (node.fontWeight) style.fontWeight = String(node.fontWeight);
         // 1.25 is the same default the SVG and HTML exporters use, so the
@@ -5069,6 +5094,47 @@ window.__ModuleLoader__.load({
         const node = (doc?.nodes || []).find((item) => item.id === onlyId);
         return node && node.type === 'shape' && node.shape === 'path' && node.path ? node : null;
       }, [doc, selected]);
+      // What each node is drawn on: its own fill, or the first filled frame or
+      // group above it. A text node on a white frame has no fill of its own, and
+      // in the dark theme its inherited ink would vanish into that frame.
+      const fillBehind = useMemo(() => {
+        const nodes = doc?.nodes || [];
+        const byId = new Map(nodes.map((node) => [node.id, node]));
+        const parent = new Map();
+        for (const node of nodes) {
+          if (!canvasIsContainer(node)) continue;
+          for (const member of node.members || []) parent.set(member, node.id);
+        }
+        // An imported file does not always keep its text inside the frame it
+        // was drawn on: fall back to the innermost filled container whose box
+        // covers the node.
+        const covering = nodes
+          .filter((node) => canvasIsContainer(node) && node.fill)
+          .sort((left, right) => left.w * left.h - right.w * right.h);
+        const resolved = new Map();
+        for (const node of nodes) {
+          let fill = node.fill || null;
+          let cursor = byId.get(parent.get(node.id));
+          const seen = new Set([node.id]);
+          while (!fill && cursor && !seen.has(cursor.id)) {
+            seen.add(cursor.id);
+            fill = cursor.fill || null;
+            cursor = byId.get(parent.get(cursor.id));
+          }
+          if (!fill) {
+            const centerX = node.x + node.w / 2;
+            const centerY = node.y + node.h / 2;
+            const host = covering.find((container) => (
+              centerX >= container.x && centerX <= container.x + container.w
+              && centerY >= container.y && centerY <= container.y + container.h
+            ));
+            fill = host?.fill || null;
+          }
+          resolved.set(node.id, fill);
+        }
+        return resolved;
+      }, [doc]);
+
       // Anchors and their handles exist only in point-editing mode.
       const editingPoints = Boolean(selectedPathNode && pointEditId === selectedPathNode.id);
       const palette = useMemo(() => canvasPalette(stageRef.current), [doc, selected]);
@@ -5160,6 +5226,12 @@ window.__ModuleLoader__.load({
         // Text size and ink come from the import; they only apply to text.
         if (node.fontSize && node.type !== 'image') style.fontSize = `${node.fontSize}px`;
         if (node.textColor && node.type !== 'image') style.color = node.textColor;
+        else if (node.type !== 'image') {
+          // A light fill carries dark ink whatever the theme is doing, and a
+          // node with no fill inherits the surface of the frame it sits on.
+          const ink = canvasInkOnFill(fillBehind.get(node.id) || node.fill);
+          if (ink) style.color = ink;
+        }
         if (node.type === 'shape') {
           // A shape paints itself through its own SVG, so the box stays bare at
           // readable zoom. In the overview the body is not drawn at all, so the
@@ -7685,6 +7757,10 @@ window.__ModuleLoader__.load({
         --mm-palette-sky:rgb(74 127 181);
         --mm-palette-violet:rgb(124 107 196);
         --mm-palette-slate:rgb(107 114 128);
+        /* Ink a node's own fill can carry, whatever the theme is doing: white
+           paper still needs a dark word written on it in the dark theme. */
+        --mm-ink-on-light:rgb(16 20 24);
+        --mm-ink-on-dark:rgb(244 246 248);
         --mm-export-background:rgb(251 250 248);
         --mm-export-ink:rgb(43 41 38);
         --mm-export-line:rgb(141 139 134);

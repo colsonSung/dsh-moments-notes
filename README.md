@@ -13,6 +13,8 @@ importer, and a capture float that stays on top of every other app.
 
 ![The design editor](docs/screenshots/design.png)
 
+![The design editor in the dark theme](docs/screenshots/design-dark.png)
+
 ![The capture float](docs/screenshots/float.png)
 
 ## Two products in one plugin
@@ -52,6 +54,9 @@ chore.
 - **Export that matches the screen.** SVG, PNG, HTML + CSS and a spec JSON of colours, type
   scale, radii and shadows. The chat tool card previews the very same renderer the export
   writes, so a preview can never disagree with the deliverable.
+- **Ink follows the fill, not the theme.** A white frame imported from FigJam keeps dark text
+  in the dark theme (and a night-blue card keeps light text in the light one); a node with no
+  fill of its own reads the frame it sits on, and only then the theme's own ink.
 
 ### Figma / FigJam import
 
