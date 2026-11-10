@@ -6339,13 +6339,16 @@ window.__ModuleLoader__.load({
                   h('path', {
                     className: 'mm-canvas-edge',
                     d: geometry.d,
-                    // A one-pixel line at 10% zoom is a tenth of a pixel: keep
-                    // the stroke readable so a flowchart still reads.
+                    // `currentColor` is the surface ink, so a connector with no
+                    // colour of its own still follows the theme.
+                    stroke: edge.stroke || 'currentColor',
+                    // With `vector-effect: non-scaling-stroke` these are screen
+                    // pixels: the authored weight is scaled to the zoom, with a
+                    // floor so a flowchart read at 10% still shows its lines.
+                    'stroke-width': Math.max(weight * (camera.zoom || 1), 1.4),
                     'vector-effect': 'non-scaling-stroke',
-                    'stroke-width': weight,
                     'stroke-linecap': 'round',
                     'stroke-linejoin': 'round',
-                    ...(edge.stroke ? { stroke: edge.stroke } : null),
                     ...(dash ? { 'stroke-dasharray': dash } : null),
                   }),
                   ...canvasEdgeHeads(
@@ -8231,7 +8234,7 @@ window.__ModuleLoader__.load({
       .mm-canvas-node-empty{font-size:13px;line-height:1.55;color:var(--dsw-alias-label-secondary);font-style:italic}
       .mm-canvas-node-input{width:100%;height:100%;padding:0;border:0;outline:0;resize:none;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.55}
       .mm-canvas-edges{position:absolute;left:0;top:0;width:1px;height:1px;overflow:visible;pointer-events:none}
-      .mm-canvas-edge{fill:none;stroke:color-mix(in oklab,var(--dsw-alias-label-primary) 55%,transparent);stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round}
+      .mm-canvas-edge{fill:none;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round}
       .mm-canvas-edge-head{pointer-events:none}
       .mm-canvas-edge-head.is-arrow{stroke-linecap:round;stroke-linejoin:round}
       .mm-canvas-connect-preview{position:absolute;inset:0;z-index:6;overflow:visible;pointer-events:none}
