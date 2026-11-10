@@ -333,7 +333,9 @@ window.__ModuleLoader__.load({
     }
 
     const ICON_PATHS = {
-      pen: ['M4 20l4-1 11-11-3-3L5 16z', 'M14 5l3-3 3 3-3 3', 'M4 20l1-4 3 3'],
+      // A curve with two anchors, not a pencil: the pencil read as "annotate",
+      // and nobody could guess that it draws vector paths.
+      pen: ['M4 17C7.6 17 9.2 8 13 8s4.8 9 7 9', 'M2.8 15.8h2.4v2.4H2.8z', 'M18.8 4.8h2.4v2.4h-2.4z'],
       folder: ['M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z'],
       plus: ['M12 5v14', 'M5 12h14'],
       search: ['M21 21l-4.35-4.35', 'M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16z'],
@@ -1795,18 +1797,23 @@ window.__ModuleLoader__.load({
     const CANVAS_SHAPE_SIZE = { w: 180, h: 120 };
     const CANVAS_FRAME_SIZE = { w: 480, h: 320 };
     const CANVAS_NOTE_SIZE = { w: 240, h: 150 };
+    // `hint` is the keyboard shortcut, `hintText` says what the tool does. The
+    // bar shows the hovered tool's sentence in the space next to the icons, so
+    // an icon never has to carry a whole idea on its own.
     const CANVAS_TOOLS = [
-      { id: 'select', icon: 'pointer', label: 'Select', hint: 'V' },
-      { id: 'hand', icon: 'hand', label: 'Pan', hint: 'H' },
-      { id: 'sticky', icon: 'sticky', label: 'Sticky note', hint: 'N' },
-      { id: 'text', icon: 'text', label: 'Text', hint: 'T' },
-      { id: 'frame', icon: 'frame', label: 'Frame', hint: 'F' },
-      { id: 'rect', icon: 'rect', label: 'Rectangle', hint: 'R' },
-      { id: 'ellipse', icon: 'ellipse', label: 'Ellipse', hint: 'O' },
-      { id: 'path', icon: 'pen', label: 'Pen', hint: 'P' },
-      { id: 'image', icon: 'image', label: 'Place a picture', hint: 'I' },
-      { id: 'connector', icon: 'connector', label: 'Connector', hint: 'C' },
+      { id: 'select', icon: 'pointer', label: 'Select', hint: 'V', hintText: 'click to select, drag to move' },
+      { id: 'hand', icon: 'hand', label: 'Pan', hint: 'H', hintText: 'drag the board around' },
+      { id: 'sticky', icon: 'sticky', label: 'Sticky note', hint: 'N', hintText: 'click to drop a note' },
+      { id: 'text', icon: 'text', label: 'Text', hint: 'T', hintText: 'click to type' },
+      { id: 'frame', icon: 'frame', label: 'Frame', hint: 'F', hintText: 'click to make a frame' },
+      { id: 'rect', icon: 'rect', label: 'Rectangle', hint: 'R', hintText: 'click to draw a rectangle' },
+      { id: 'ellipse', icon: 'ellipse', label: 'Ellipse', hint: 'O', hintText: 'click to draw an ellipse' },
+      { id: 'path', icon: 'pen', label: 'Pen', hint: 'P', hintText: 'click anchors, Enter to finish' },
+      { id: 'image', icon: 'image', label: 'Place a picture', hint: 'I', hintText: 'pick an image file' },
+      { id: 'connector', icon: 'connector', label: 'Connector', hint: 'C', hintText: 'drag between two objects' },
     ];
+    const CANVAS_UNDO_HINT = { label: 'Undo', hint: '⌘Z', hintText: 'step back one change' };
+    const CANVAS_REDO_HINT = { label: 'Redo', hint: '⌘⇧Z', hintText: 'step forward again' };
     const CANVAS_NODE_LABELS = { note: 'Note', sticky: 'Sticky note', text: 'Text', shape: 'Shape', group: 'Group', frame: 'Frame', component: 'Component', instance: 'Instance' };
     const CANVAS_GROUP_PADDING = 12;
     const CANVAS_OVERVIEW_ZOOM = 0.35;
@@ -2751,6 +2758,12 @@ window.__ModuleLoader__.load({
       const [snapGuides, setSnapGuides] = useState([]);
       // The pen builds its path in world coordinates until the person commits.
       const [pathDraft, setPathDraft] = useState(null);
+      // The tool the pointer is over, so the bar can say what the icon means.
+      const [hoveredTool, setHoveredTool] = useState(null);
+      // Point editing is its own mode, entered on purpose. A selected vector
+      // path shows only its box handles: otherwise a press near the stroke
+      // grabs an anchor and a few pixels of drift deform the curve.
+      const [pointEditId, setPointEditId] = useState(null);
       // The performance HUD is opt-in: it exists so a big board can be judged
       // by numbers instead of a feeling.
       const [perfHud, setPerfHud] = useState(
@@ -4597,6 +4610,13 @@ window.__ModuleLoader__.load({
 
       const startEditing = useCallback((node) => {
         if (node.locked) return;
+        // A vector path has no text to edit: a second tap is the request to
+        // shape its points.
+        if (node.type === 'shape' && node.shape === 'path' && node.path) {
+          setEditingId(null);
+          setPointEditId(node.id);
+          return;
+        }
         // Re-entering would throw away what has been typed.
         if (editingIdRef.current === node.id) return;
         const note = node.type === 'note' ? noteMap.get(node.noteId) : null;
@@ -4837,6 +4857,11 @@ window.__ModuleLoader__.load({
           deleteSelection();
           return;
         }
+        if (key === 'Escape' && pointEditId) {
+          event.preventDefault?.();
+          setPointEditId(null);
+          return;
+        }
         if (key === 'Escape') {
           setSelected(new Set());
           setEditingId(null);
@@ -4851,13 +4876,20 @@ window.__ModuleLoader__.load({
         else if (key === 'ArrowRight') { event.preventDefault?.(); nudgeSelection(step, 0); }
         else if (key === 'ArrowUp') { event.preventDefault?.(); nudgeSelection(0, -step); }
         else if (key === 'ArrowDown') { event.preventDefault?.(); nudgeSelection(0, step); }
-      }, [addPictures, commitPathDraft, deleteSelection, duplicateSelection, fitToContent, nudgeSelection, pathDraft, redo, resetZoom, selectNodes, undo]);
+      }, [addPictures, commitPathDraft, deleteSelection, duplicateSelection, fitToContent, nudgeSelection, pathDraft, pointEditId, redo, resetZoom, selectNodes, undo]);
 
       useEffect(() => {
         if (tool === 'connector') return;
         setConnectFrom(null);
         setConnectPreview(null);
       }, [tool]);
+
+      // Point editing belongs to one path and one moment: leaving the path, or
+      // switching tools, must give the anchors back to the shape's own drag.
+      useEffect(() => {
+        if (!pointEditId) return;
+        if (tool !== 'select' || !selected.has(pointEditId)) setPointEditId(null);
+      }, [pointEditId, selected, tool]);
 
       const onNodeKeyDown = useCallback((event, node) => {
         // The editor that lives inside the node sends its own keys; they
@@ -5029,13 +5061,16 @@ window.__ModuleLoader__.load({
         return null;
       }, [doc, styleTarget]);
 
-      // A lone selected vector path shows its anchors for hand editing.
+      // A lone selected vector path can be hand-edited, but only once the
+      // person asks for it.
       const selectedPathNode = useMemo(() => {
         if (selected.size !== 1) return null;
         const [onlyId] = selected;
         const node = (doc?.nodes || []).find((item) => item.id === onlyId);
         return node && node.type === 'shape' && node.shape === 'path' && node.path ? node : null;
       }, [doc, selected]);
+      // Anchors and their handles exist only in point-editing mode.
+      const editingPoints = Boolean(selectedPathNode && pointEditId === selectedPathNode.id);
       const palette = useMemo(() => canvasPalette(stageRef.current), [doc, selected]);
       const handles = selectionFrame
         ? [
@@ -5044,9 +5079,10 @@ window.__ModuleLoader__.load({
           { id: 'sw', left: selectionFrame.left, top: selectionFrame.top + selectionFrame.height },
           { id: 'se', left: selectionFrame.left + selectionFrame.width, top: selectionFrame.top + selectionFrame.height },
         ].map((handle) => {
-          // A path's endpoints sit on the box corners, so a corner handle would
-          // cover the anchor and steal the press. Step the box handles out.
-          if (!selectedPathNode) return handle;
+          // While the anchors are shown, a path's endpoints sit on the box
+          // corners and a corner handle would cover an anchor. Step the box
+          // handles out only in that mode; otherwise they sit on the box.
+          if (!(editingPoints && selectedPathNode)) return handle;
           const step = 8;
           return {
             ...handle,
@@ -5585,6 +5621,12 @@ window.__ModuleLoader__.load({
                 ? section('path', 'Path',
                   h('button', {
                     type: 'button',
+                    className: cx('mm-inspector-chip', editingPoints && 'is-active'),
+                    onClick: () => setPointEditId(editingPoints ? null : target.id),
+                    'aria-label': editingPoints ? 'Finish editing the path points' : 'Edit the path points',
+                  }, editingPoints ? 'Done editing' : 'Edit points'),
+                  h('button', {
+                    type: 'button',
                     className: 'mm-inspector-chip',
                     onClick: () => togglePathCurve(target),
                     'aria-label': 'Curve or straighten the path (inspector)',
@@ -5689,6 +5731,10 @@ window.__ModuleLoader__.load({
           title: `${item.label} (${item.hint})`,
           'aria-label': item.label,
           'aria-pressed': tool === item.id,
+          onMouseEnter: () => setHoveredTool(item),
+          onFocus: () => setHoveredTool(item),
+          onMouseLeave: () => setHoveredTool(null),
+          onBlur: () => setHoveredTool(null),
           onClick: () => {
             if (item.id === 'image') pictureRef.current?.click();
             else {
@@ -5702,11 +5748,21 @@ window.__ModuleLoader__.load({
         h('button', {
           type: 'button', className: 'mm-canvas-tool', disabled: !history.length,
           onClick: undo, title: 'Undo (⌘Z)', 'aria-label': 'Undo',
+          onMouseEnter: () => setHoveredTool(CANVAS_UNDO_HINT),
+          onMouseLeave: () => setHoveredTool(null),
         }, h(Icon, { name: 'undo', size: 16 })),
         h('button', {
           type: 'button', className: 'mm-canvas-tool', disabled: !future.length,
           onClick: redo, title: 'Redo (⌘⇧Z)', 'aria-label': 'Redo',
-        }, h(Icon, { name: 'redo', size: 16 })));
+          onMouseEnter: () => setHoveredTool(CANVAS_REDO_HINT),
+          onMouseLeave: () => setHoveredTool(null),
+        }, h(Icon, { name: 'redo', size: 16 })),
+        // Icons alone are a guessing game: the bar names the tool under the
+        // pointer, says what it does, and shows its key.
+        h('div', { className: 'mm-canvas-tool-caption', 'aria-live': 'polite' },
+          h('b', null, (hoveredTool || CANVAS_TOOLS.find((item) => item.id === tool) || CANVAS_TOOLS[0]).label),
+          h('span', null, ` — ${(hoveredTool || CANVAS_TOOLS.find((item) => item.id === tool) || CANVAS_TOOLS[0]).hintText || ''}`),
+          h('kbd', null, (hoveredTool || CANVAS_TOOLS.find((item) => item.id === tool) || CANVAS_TOOLS[0]).hint)));
 
 
       /** Board management and export, folded into one menu so the bar stays quiet. */
@@ -6354,7 +6410,7 @@ window.__ModuleLoader__.load({
                 startResize(event, handle.id);
               },
             })),
-            selectedPathNode
+            editingPoints && selectedPathNode
               ? selectedPathNode.path.points.map((point, index) => {
                 const dot = 9 / (camera.zoom || 1);
                 const at = {
@@ -6380,7 +6436,7 @@ window.__ModuleLoader__.load({
                 });
               })
               : null,
-            selectedPathNode
+            editingPoints && selectedPathNode
               ? selectedPathNode.path.points.flatMap((point, index) => ['in', 'out'].map((side) => {
                 const handle = point[side];
                 if (!handle) return null;
@@ -6708,12 +6764,15 @@ window.__ModuleLoader__.load({
                   }, 'Restore'))))
               : h('p', { className: 'mm-inspector-hint' }, 'No versions yet — they are saved whenever the board changes.'))
           : null,
-        tool === 'connector'
+        editingPoints
           ? h('div', { className: 'mm-canvas-connect-hint', role: 'status' },
-            connectFrom
-              ? '已选中起点，点第二个内容完成连线 · Esc 退出'
-              : '拖到第二个内容松开即连线，或先点一个再点另一个 · Esc 退出')
-          : null,
+            'Editing points — drag an anchor, or press Esc to go back to moving the shape')
+          : tool === 'connector'
+            ? h('div', { className: 'mm-canvas-connect-hint', role: 'status' },
+              connectFrom
+                ? 'The start is set — click a second object to finish the line · Esc leaves'
+                : 'Drag onto a second object to connect, or click one and then another · Esc leaves')
+            : null,
         // The AI entry is a button in the bottom-left corner, not a permanent
         // bar: the connector style panel and the connect hint own the
         // bottom-centre strip, and the bar used to sit underneath them.
@@ -7986,6 +8045,10 @@ window.__ModuleLoader__.load({
       .mm-canvas-bar-left{display:flex;align-items:center;gap:6px;flex:none;min-width:0}
       .mm-canvas-tools{display:flex;align-items:center;justify-content:flex-start;gap:2px;flex:1;min-width:0}
       .mm-canvas-tools-gap{width:1px;height:18px;margin:0 6px;background:var(--mm-line);flex:none}
+      .mm-canvas-tool-caption{display:inline-flex;align-items:center;gap:8px;min-width:0;margin-left:14px;overflow:hidden;white-space:nowrap;font-size:11.5px;line-height:1.2;color:var(--dsw-alias-label-secondary)}
+      .mm-canvas-tool-caption b{flex:none;font-weight:600;color:var(--dsw-alias-label-primary)}
+      .mm-canvas-tool-caption span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+      .mm-canvas-tool-caption kbd{flex:none;padding:1px 5px;border:1px solid var(--mm-line);border-radius:var(--dsw-radius-xs);background:var(--mm-surface-2);color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:10.5px}
       .mm-canvas-toolbar-gap{width:1px;height:20px;margin:0 4px;background:var(--mm-line);flex:none}
       .mm-canvas-select{height:28px;max-width:260px;padding:0 8px;border:1px solid var(--mm-line);border-radius:var(--dsw-radius-sm);background:var(--mm-surface-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px}
       .mm-canvas-bar-button{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border:1px solid var(--mm-line);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px;cursor:pointer;transition:background-color 100ms ease,color 100ms ease}

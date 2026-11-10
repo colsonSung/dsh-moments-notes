@@ -3714,7 +3714,7 @@ test('the pen turns clicks into a vector path and Enter commits it', async () =>
   }
 })
 
-test('a selected vector path shows anchors, and dragging one moves that point', async () => {
+test('a selected vector path shows anchors only when point editing is asked for, and dragging one moves that point', async () => {
   const document = {
     version: 1,
     id: 'c1',
@@ -3736,6 +3736,14 @@ test('a selected vector path shows anchors, and dragging one moves that point', 
     renderMain(plugin)
     await enterCanvasMode(plugin)
     await selectNodes(plugin, ['wave'])
+    await settle(plugin, 2)
+    // Selecting is not editing: a press near the stroke has to move the shape.
+    assert.equal(
+      findAll(plugin.renderer.root, (element) => String(element.props?.className || '').includes('mm-canvas-anchor')).length,
+      0,
+      'a selected path shows no anchors until point editing is asked for',
+    )
+    await clickElement(plugin, findAll(plugin.renderer.root, (element) => element.props?.['aria-label'] === 'Edit the path points')[0])
     await settle(plugin, 2)
     const anchors = findAll(plugin.renderer.root, (element) => String(element.props?.className || '').includes('mm-canvas-anchor'))
     assert.equal(anchors.length, 2, 'each path point gets a handle')
@@ -3780,6 +3788,8 @@ test('a bezier handle can be dragged to reshape the curve', async () => {
     renderMain(plugin)
     await enterCanvasMode(plugin)
     await selectNodes(plugin, ['wave'])
+    await settle(plugin, 2)
+    await clickElement(plugin, findAll(plugin.renderer.root, (element) => element.props?.['aria-label'] === 'Edit the path points')[0])
     await settle(plugin, 2)
     const before = toMarkup(nodeById(plugin, 'wave'))
     assert.match(before, /C 40 60 240 20 240 20/, 'the curve starts from the stored handle')
@@ -4201,6 +4211,69 @@ test('the inspector edits the selected node and can be closed', async () => {
 
 
 
+test('a small drag on a selected path moves the whole shape, not one of its points', async () => {
+  // The reported bug: a selected vector path showed its anchors at once, so a
+  // press near the stroke grabbed a point and a couple of pixels of drift bent
+  // the curve instead of moving the shape.
+  const document = {
+    version: 1, id: 'c1', title: 'Drag', createdAt: 1, updatedAt: 2,
+    camera: { x: 0, y: 0, zoom: 1 },
+    nodes: [
+      {
+        id: 'wave', type: 'shape', shape: 'path', x: 100, y: 100, w: 240, h: 120,
+        stroke: '#635bff', strokeWidth: 3,
+        path: { closed: false, points: [{ x: 0, y: 100 }, { x: 240, y: 20 }] },
+      },
+    ],
+    edges: [],
+  }
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: document, c2: EMPTY_DOCUMENT } }) })
+  try {
+    renderMain(plugin)
+    await enterCanvasMode(plugin)
+    await selectNodes(plugin, ['wave'])
+    await settle(plugin, 2)
+
+    const node = nodeById(plugin, 'wave')
+    await pressAt(plugin, node, { x: 150, y: 150 })
+    const surface = findByClass(plugin.renderer.root, 'mm-canvas-surface')
+    surface.props.onPointerMove(makeEvent({ clientX: 153, clientY: 150, buttons: 1 }))
+    await settle(plugin, 2)
+    surface.props.onPointerUp(makeEvent({ clientX: 153, clientY: 150 }))
+    await settle(plugin, 2)
+
+    const moved = nodeById(plugin, 'wave')
+    assert.match(toMarkup(moved), /d="M 0 100 L 240 20"/, 'the path keeps its own geometry')
+    const left = Number(String(moved.props.style.left).replace('px', ''))
+    assert.ok(left >= 103, `the shape itself moved with the pointer, left=${left}`)
+  } finally {
+    plugin.restore()
+  }
+})
+
+test('the tool bar names the tool under the pointer and says what it does', async () => {
+  const plugin = await loadMomentsClient({ routes: canvasRoutes() })
+  try {
+    renderMain(plugin)
+    await enterCanvasMode(plugin)
+    const caption = findByClass(plugin.renderer.root, 'mm-canvas-tool-caption')
+    assert.ok(caption, 'the bar carries a caption')
+    assert.match(toMarkup(caption), /Select/, 'the active tool is named by default')
+
+    const pen = findAll(plugin.renderer.root, (element) => element.props?.['data-tool'] === 'path')[0]
+    assert.ok(pen, 'the pen button exists')
+    pen.props.onMouseEnter()
+    await settle(plugin, 1)
+    const hovered = toMarkup(findByClass(plugin.renderer.root, 'mm-canvas-tool-caption'))
+    assert.match(hovered, /Pen/)
+    assert.match(hovered, /click anchors/, 'the caption explains what the pen does')
+    assert.match(hovered, /P/, 'the caption shows the shortcut')
+  } finally {
+    plugin.restore()
+  }
+})
+
+
 test('the AI field folds out of the bottom-left corner and parks a request on the board', async () => {
   const document = {
     version: 1, id: 'c1', title: 'Dock', createdAt: 1, updatedAt: 2,
@@ -4484,6 +4557,8 @@ test('path anchors sit exactly on their stored points at any camera', async () =
     await enterCanvasMode(plugin)
     await selectNodes(plugin, ['wave'])
     await settle(plugin, 2)
+    await clickElement(plugin, findAll(plugin.renderer.root, (element) => element.props?.['aria-label'] === 'Edit the path points')[0])
+    await settle(plugin, 2)
 
     const anchors = findAll(plugin.renderer.root, (element) => String(element.props?.className || '').includes('mm-canvas-anchor'))
     assert.equal(anchors.length, 2)
@@ -4513,7 +4588,7 @@ test('path anchors sit exactly on their stored points at any camera', async () =
 })
 
 
-test('selecting a path keeps its anchors clear of the box handles', async () => {
+test('a path keeps its anchors clear of the box handles while the points are open', async () => {
   const document = {
     version: 1, id: 'c1', title: 'Hits', createdAt: 1, updatedAt: 2,
     camera: { x: 0, y: 0, zoom: 1 },
@@ -4532,12 +4607,20 @@ test('selecting a path keeps its anchors clear of the box handles', async () => 
     await enterCanvasMode(plugin)
     await selectNodes(plugin, ['wave'])
     await settle(plugin, 2)
-
-    const handles = findAll(plugin.renderer.root, (element) => String(element.props?.['data-handle'] || '').length > 0)
+    let handles = findAll(plugin.renderer.root, (element) => String(element.props?.['data-handle'] || '').length > 0)
     assert.equal(handles.length, 4, 'the box still offers its resize handles')
-    // The bottom-left corner of the box is also the path's first anchor, so the
-    // handle steps eight pixels out instead of sitting on top of the point.
-    const sw = handles.find((element) => element.props['data-handle'] === 'sw')
+    // Before point editing the handle sits on the box corner, where a drag
+    // resizes instead of deforming the curve.
+    let sw = handles.find((element) => element.props['data-handle'] === 'sw')
+    assert.equal(sw.props.style.left, '100px')
+    assert.equal(sw.props.style.top, '200px')
+
+    await clickElement(plugin, findAll(plugin.renderer.root, (element) => element.props?.['aria-label'] === 'Edit the path points')[0])
+    await settle(plugin, 2)
+    handles = findAll(plugin.renderer.root, (element) => String(element.props?.['data-handle'] || '').length > 0)
+    // The bottom-left corner of the box is also the path's first anchor, so in
+    // point editing the handle steps eight pixels out instead of covering it.
+    sw = handles.find((element) => element.props['data-handle'] === 'sw')
     assert.equal(sw.props.style.left, '92px')
     assert.equal(sw.props.style.top, '208px')
     const anchors = findAll(plugin.renderer.root, (element) => String(element.props?.className || '').includes('mm-canvas-anchor'))
@@ -4627,7 +4710,7 @@ test('the connector tool explains the drag and marks its source', async () => {
     await settle(plugin, 2)
     const hint = findByClass(plugin.renderer.root, 'mm-canvas-connect-hint')
     assert.ok(hint, 'the connector mode explains how to connect')
-    assert.match(toMarkup(hint), /拖到第二个内容/)
+    assert.match(toMarkup(hint), /Drag onto a second object/)
 
     const first = canvasNodes(plugin)[0]
     await pressAt(plugin, first, { x: leftOf(plugin, first.props['data-node-id']) + 10, y: topOf(plugin, first.props['data-node-id']) + 10 })

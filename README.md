@@ -44,6 +44,11 @@ chore.
 - **A real design model.** Design tokens with light and dark tables, auto layout
   (row / column, gap, padding, align), constraints, components and instances, rich text runs,
   gradients, shadows, blur and blend modes, layout grids, vector paths with editable anchors.
+- **The tools name themselves.** The bar says what the tool under the pointer does and which
+  key picks it, so an icon never has to carry a whole idea on its own.
+- **Paths move as shapes, and are edited on purpose.** A selected vector path shows only its
+  box handles: press and drag and the path moves as one object. A second tap (or **Edit points**
+  in the inspector) opens the anchors, where a drag bends the curve; Esc closes them again.
 - **Export that matches the screen.** SVG, PNG, HTML + CSS and a spec JSON of colours, type
   scale, radii and shadows. The chat tool card previews the very same renderer the export
   writes, so a preview can never disagree with the deliverable.
