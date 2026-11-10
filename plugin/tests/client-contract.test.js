@@ -407,6 +407,18 @@ test('styling is responsive, reduced-motion aware and based on theme tokens', ()
   assert.doesNotMatch(source, /#[0-9a-fA-F]{3,8}\b/, 'does not hard-code hex colors');
 });
 
+test('the dark theme gives floating overlays their own dark tint', () => {
+  // The host's overlay token is a mid grey in the dark theme: every floating
+  // control (the AI field, menus, hints) rendered as a grey chip until the
+  // dark block defined its own.
+  const darkStart = source.indexOf('body[data-ds-dark-theme] .mm-app');
+  assert.ok(darkStart > -1, 'the dark theme block exists');
+  const darkEnd = source.indexOf('}', source.indexOf('--mm-overview-sticky', darkStart));
+  const darkBlock = source.slice(darkStart, darkEnd);
+  assert.match(darkBlock, /--mm-overlay:color-mix\(/, 'the dark block tints its own overlay');
+  assert.doesNotMatch(darkBlock, /--mm-overlay:var\(--dsw-alias-bg-overlay\)/, 'never inherits the grey host overlay');
+});
+
 test('the warm editorial system keeps accent, metadata and elevation disciplined', () => {
   includes(/--mm-accent-base:rgb\(181 64 42\)/, 'uses the contrast-checked light seal');
   includes(/--mm-accent-base:rgb\(228 100 74\)/, 'uses the contrast-checked dark seal');

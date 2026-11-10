@@ -7781,6 +7781,10 @@ window.__ModuleLoader__.load({
         --mm-shadow-float:0 2px 6px rgb(0 0 0 / .28),0 16px 36px -12px rgb(0 0 0 / .52);
         --mm-accent-ink:var(--mm-accent-base);
         --mm-on-accent:rgb(21 21 23);
+        /* The host's overlay token is a mid grey in the dark theme, which turns
+           every floating control (the AI field, menus, hints) into a grey chip.
+           A dark theme wants a dark glass tinted by the surface above the board. */
+        --mm-overlay:color-mix(in oklab,var(--mm-surface-2) 96%,transparent);
         /* A tint mixed into a dark surface reads as mud, so the dark theme
            lifts the surface first and keeps the hue readable. */
         --mm-tint-amber:color-mix(in oklab,var(--mm-palette-amber) 26%,var(--mm-surface-2));
