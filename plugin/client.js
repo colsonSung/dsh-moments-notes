@@ -2757,8 +2757,16 @@ window.__ModuleLoader__.load({
         () => readStoredValue('moments-notes:canvas-perf', false) === true,
       );
       const [frameRate, setFrameRate] = useState(null);
-      // The bottom bar's AI field: a request parked on the board and copied.
+      // The AI request field parks a prompt on the board and copies it. It
+      // stays folded behind a button in the bottom-left corner: the canvas has
+      // its own bottom-centre panels (connector styles, connect hint) and a
+      // permanent full-width bar sat underneath them.
       const [aiPrompt, setAiPrompt] = useState('');
+      const [aiOpen, setAiOpen] = useState(false);
+      const aiInputRef = useRef(null);
+      useEffect(() => {
+        if (aiOpen) aiInputRef.current?.focus?.();
+      }, [aiOpen]);
       // Version history: the Host keeps the copies, the panel lists them.
       const figmaRef = useRef(null);
       const [versionsOpen, setVersionsOpen] = useState(false);
@@ -4477,6 +4485,7 @@ window.__ModuleLoader__.load({
         applyDoc((draft) => ({ ...draft, nodes: [...draft.nodes, node] }), { history: true });
         setSelected(new Set([node.id]));
         setAiPrompt('');
+        setAiOpen(false);
         globalThis.navigator?.clipboard?.writeText?.(prompt)?.catch?.(() => {});
         onNotice?.('Request placed on the board and copied — paste it in the chat to run it');
       }, [aiPrompt, applyDoc, onNotice, viewport]);
@@ -6705,31 +6714,62 @@ window.__ModuleLoader__.load({
               ? '已选中起点，点第二个内容完成连线 · Esc 退出'
               : '拖到第二个内容松开即连线，或先点一个再点另一个 · Esc 退出')
           : null,
-        // The bottom bar is the AI entry: a request typed here lands on the
-        // board as a text node and is copied, so the next chat turn can run it.
-        h('div', { className: 'mm-canvas-dock', role: 'search', 'aria-label': 'Ask AI' },
-          h(Icon, { name: 'send', size: 13 }),
-          h('input', {
-            className: 'mm-canvas-ai-input',
-            type: 'text',
-            value: aiPrompt,
-            placeholder: 'Ask AI to change this board — it lands on the canvas and is copied',
-            'aria-label': 'Ask AI to change the board',
-            onChange: (event) => setAiPrompt(event.target.value),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault?.();
-                submitDesignRequest();
-              }
-            },
-          }),
-          h('button', {
+        // The AI entry is a button in the bottom-left corner, not a permanent
+        // bar: the connector style panel and the connect hint own the
+        // bottom-centre strip, and the bar used to sit underneath them.
+        aiOpen
+          ? h('div', {
+            className: cx('mm-canvas-dock', 'is-open', selectedEdgeId && 'is-lifted'),
+            role: 'search',
+            'aria-label': 'Ask AI',
+            onPointerDown: (event) => event.stopPropagation?.(),
+          },
+            h(Icon, { name: 'send', size: 13 }),
+            h('input', {
+              ref: aiInputRef,
+              className: 'mm-canvas-ai-input',
+              type: 'text',
+              value: aiPrompt,
+              placeholder: 'Ask AI to change this board',
+              title: 'The request lands on the board as a note and is copied',
+              'aria-label': 'AI request for this board',
+              onChange: (event) => setAiPrompt(event.target.value),
+              onKeyDown: (event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault?.();
+                  submitDesignRequest();
+                  return;
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault?.();
+                  event.stopPropagation?.();
+                  setAiOpen(false);
+                }
+              },
+            }),
+            h('button', {
+              type: 'button',
+              className: 'mm-canvas-ai-send',
+              disabled: !aiPrompt.trim(),
+              onClick: () => submitDesignRequest(),
+              'aria-label': 'Place the request on the board',
+            }, h(Icon, { name: 'send', size: 14 })),
+            h('button', {
+              type: 'button',
+              className: 'mm-canvas-ai-close',
+              onClick: () => setAiOpen(false),
+              'aria-label': 'Close the AI field',
+            }, h(Icon, { name: 'close', size: 14 })))
+          : h('button', {
             type: 'button',
-            className: 'mm-canvas-ai-send',
-            disabled: !aiPrompt.trim(),
-            onClick: () => submitDesignRequest(),
-            'aria-label': 'Place the request on the board',
-          }, h(Icon, { name: 'send', size: 14 }))),
+            className: 'mm-canvas-ai-launcher',
+            onClick: () => setAiOpen(true),
+            'aria-expanded': false,
+            'aria-label': 'Ask AI to change the board',
+            title: 'Ask AI to change this board',
+          },
+            h(Icon, { name: 'send', size: 13 }),
+            h('span', null, 'Ask AI')),
         ),
         );
     }
@@ -7966,8 +8006,17 @@ window.__ModuleLoader__.load({
       .mm-canvas-body.is-inspector .mm-canvas-surface{right:280px}
       .mm-canvas-connect-hint{position:absolute;left:50%;top:16px;transform:translateX(-50%);z-index:4;padding:8px 12px;border:1px solid var(--mm-line-strong);border-radius:var(--dsw-radius-sm);background:var(--mm-overlay);box-shadow:var(--mm-shadow-float);color:var(--dsw-alias-label-primary);font-size:12px;line-height:1.4;white-space:nowrap}
       .mm-canvas-body.is-inspector .mm-canvas-connect-hint{left:calc(50% - 140px)}
-      .mm-canvas-dock{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);z-index:5;display:flex;align-items:center;gap:8px;width:min(600px,calc(100% - 40px));padding:6px;border:1px solid var(--mm-line-strong);border-radius:var(--dsw-radius-lg);background:var(--mm-overlay);box-shadow:var(--mm-shadow-float);color:var(--dsw-alias-label-secondary)}
-      .mm-canvas-body.is-inspector .mm-canvas-dock{left:calc(50% - 140px)}
+      /* The AI field folds out of the bottom-left corner. It is anchored left so
+         the connector style panel, which owns the bottom-centre strip, can never
+         sit on top of it; when a connector is selected the field lifts clear of
+         that panel instead of relying on stacking order. */
+      .mm-canvas-dock{position:absolute;left:16px;bottom:16px;z-index:9;display:flex;align-items:center;gap:8px;width:min(440px,calc(100% - 32px));padding:6px;border:1px solid var(--mm-line-strong);border-radius:var(--dsw-radius-lg);background:var(--mm-overlay);box-shadow:var(--mm-shadow-float);color:var(--dsw-alias-label-secondary)}
+      .mm-canvas-dock.is-lifted{bottom:76px}
+      .mm-canvas-ai-launcher{position:absolute;left:16px;bottom:16px;z-index:9;display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 12px;border:1px solid var(--mm-line-strong);border-radius:999px;background:var(--mm-overlay);box-shadow:var(--mm-shadow-float);color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;cursor:pointer;transition:color 100ms ease,border-color 100ms ease}
+      .mm-canvas-ai-launcher:hover{color:var(--dsw-alias-label-primary);border-color:var(--mm-accent-base)}
+      .mm-canvas-ai-launcher:focus-visible{outline:2px solid var(--mm-accent-base);outline-offset:2px}
+      .mm-canvas-ai-close{width:30px;height:30px;flex:none;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+      .mm-canvas-ai-close:hover{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
       .mm-canvas-ai-input{flex:1;min-width:0;height:30px;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;outline:none}
       .mm-canvas-ai-input::placeholder{color:var(--dsw-alias-label-tertiary,var(--mm-line-strong))}
       .mm-canvas-ai-send{width:30px;height:30px;flex:none;border:1px solid var(--mm-line);border-radius:var(--dsw-radius-sm);background:var(--mm-surface-2);color:var(--dsw-alias-label-primary);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
@@ -8001,7 +8050,7 @@ window.__ModuleLoader__.load({
       .mm-inspector-row{display:flex;align-items:center;gap:8px;min-height:28px;min-width:0;flex-wrap:wrap}
       .mm-inspector-row .mm-inspector-select{min-width:0}
       .mm-inspector-section>*{min-width:0}
-      .mm-canvas-dock{max-width:calc(100% - 40px)}
+      .mm-canvas-dock{max-width:calc(100% - 32px)}
       .mm-inspector-color{width:32px;height:28px;padding:2px;border:1px solid var(--mm-line);border-radius:var(--dsw-radius-sm);background:transparent;cursor:pointer}
       .mm-inspector-select{flex:1;height:28px;padding:0 8px;border:1px solid var(--mm-line);border-radius:var(--dsw-radius-sm);background:var(--mm-surface-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px}
       .mm-inspector-chip{height:auto;min-height:28px;padding:2px 8px;border:1px solid var(--mm-line);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}

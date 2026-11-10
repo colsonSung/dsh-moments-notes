@@ -4201,7 +4201,7 @@ test('the inspector edits the selected node and can be closed', async () => {
 
 
 
-test('the bottom bar parks an AI request on the board', async () => {
+test('the AI field folds out of the bottom-left corner and parks a request on the board', async () => {
   const document = {
     version: 1, id: 'c1', title: 'Dock', createdAt: 1, updatedAt: 2,
     camera: { x: 0, y: 0, zoom: 1 },
@@ -4212,10 +4212,18 @@ test('the bottom bar parks an AI request on the board', async () => {
   try {
     renderMain(plugin)
     await enterCanvasMode(plugin)
-    const dock = findByClass(plugin.renderer.root, 'mm-canvas-dock')
-    assert.ok(dock, 'the bottom bar is docked on the canvas')
+    // Folded by default: the canvas keeps the bottom-centre strip for its own
+    // connector panels, so a request bar must not claim it permanently.
+    assert.equal(findByClass(plugin.renderer.root, 'mm-canvas-dock'), null, 'the field starts folded')
+    const launcher = findByClass(plugin.renderer.root, 'mm-canvas-ai-launcher')
+    assert.ok(launcher, 'the bottom-left corner offers the AI launcher')
+    launcher.props.onClick()
+    await settle(plugin, 2)
 
-    const field = findAll(plugin.renderer.root, (element) => element.props?.['aria-label'] === 'Ask AI to change the board')[0]
+    const dock = findByClass(plugin.renderer.root, 'mm-canvas-dock')
+    assert.ok(dock, 'the field unfolds on the canvas')
+
+    const field = findAll(plugin.renderer.root, (element) => element.props?.['aria-label'] === 'AI request for this board')[0]
     assert.ok(field, 'the bar offers an AI field')
     field.props.onChange({ target: { value: 'Make the hero section calmer' } })
     await settle(plugin, 2)
@@ -4227,8 +4235,8 @@ test('the bottom bar parks an AI request on the board', async () => {
     const texts = findAll(plugin.renderer.root, (element) => element.props?.['data-node-type'] === 'text')
     const parked = texts.some((element) => toMarkup(element).includes('Make the hero section calmer'))
     assert.ok(parked, 'the request becomes a text node on the board')
-    const cleared = findAll(plugin.renderer.root, (element) => element.props?.['aria-label'] === 'Ask AI to change the board')[0]
-    assert.equal(cleared.props.value, '', 'the field clears after sending')
+    assert.equal(findAll(plugin.renderer.root, (element) => element.props?.['aria-label'] === 'AI request for this board').length, 0, 'the field folds again after sending')
+    assert.ok(findByClass(plugin.renderer.root, 'mm-canvas-ai-launcher'), 'the launcher comes back')
 
     const htmlExport = findAll(plugin.renderer.root, (element) => element.props?.['aria-label'] === 'Export HTML and CSS')[0]
     assert.ok(htmlExport, 'the inspector offers the HTML handoff')
