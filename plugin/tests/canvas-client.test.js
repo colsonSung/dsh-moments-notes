@@ -4211,6 +4211,33 @@ test('the inspector edits the selected node and can be closed', async () => {
 
 
 
+test('the inspector collapses from its own header and leaves a tab behind', async () => {
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: V2_DOCUMENT } }) })
+  try {
+    renderMain(plugin)
+    await enterCanvasMode(plugin)
+
+    const inspector = findByClass(plugin.renderer.root, 'mm-canvas-inspector')
+    assert.ok(inspector, 'the inspector starts open')
+    const collapse = findByClass(plugin.renderer.root, 'mm-inspector-collapse')
+    assert.ok(collapse, 'the panel carries its own collapse control')
+    assert.equal(collapse.props['aria-label'], 'Collapse the inspector')
+
+    await clickElement(plugin, collapse)
+    await settle(plugin, 2)
+    assert.equal(findByClass(plugin.renderer.root, 'mm-canvas-inspector'), null, 'the panel closes')
+    const reopen = findByClass(plugin.renderer.root, 'mm-canvas-inspector-open')
+    assert.ok(reopen, 'a tab stays where the panel was')
+    assert.equal(reopen.props['aria-label'], 'Show the inspector')
+
+    await clickElement(plugin, reopen)
+    await settle(plugin, 2)
+    assert.ok(findByClass(plugin.renderer.root, 'mm-canvas-inspector'), 'the panel comes back')
+  } finally {
+    plugin.restore()
+  }
+})
+
 test('a small drag on a selected path moves the whole shape, not one of its points', async () => {
   // The reported bug: a selected vector path showed its anchors at once, so a
   // press near the stroke grabbed a point and a couple of pixels of drift bent

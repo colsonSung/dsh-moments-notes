@@ -463,6 +463,14 @@ test('the canvas answers an agent asking for a picture, wherever the person is',
   includes(/Math\.min\(wanted,\s*cap \/ width\)/, 'caps the raster instead of trusting the board size');
 });
 
+test('the inspector can be collapsed from the panel itself and remembered', () => {
+  includes(/mm-inspector-collapse/, 'the panel header carries a collapse control');
+  includes(/'Collapse the inspector'/, 'the control names what it does');
+  includes(/mm-canvas-inspector-open/, 'a tab remains where the panel was');
+  includes(/'Show the inspector'/, 'the tab names what it restores');
+  includes(/moments-notes:canvas-inspector/, 'the choice survives a reload');
+});
+
 test('the board menu offers the last Figma import report', () => {
   includes(/api\(\s*'canvas-import-report'/, 'reads the stored report');
   includes(/Last import report/, 'names the entry for a person');

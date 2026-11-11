@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.5.2 — 2026-11-11
+
+- The inspector collapses from its own header, not only from the toolbar: a
+  chevron at the panel's top edge closes it, and a small "Inspector" tab stays in
+  its place so reopening is one click where the panel used to be. The choice is
+  remembered across reloads.
+
 ## 3.5.1 — 2026-11-11
 
 - The issue report measures a label against what is painted under it, not against

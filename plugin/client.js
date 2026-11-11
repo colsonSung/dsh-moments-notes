@@ -5694,6 +5694,15 @@ window.__ModuleLoader__.load({
           onPointerDown: (event) => event.stopPropagation?.(),
         },
           h('div', { className: 'mm-inspector-header' },
+            h('button', {
+              type: 'button', className: 'mm-inspector-collapse',
+              title: 'Collapse the inspector',
+              'aria-label': 'Collapse the inspector',
+              onClick: () => {
+                setInspectorOpen(false);
+                writeStoredValue('moments-notes:canvas-inspector', false);
+              },
+            }, h(Icon, { name: 'chevron', size: 14 })),
             h('strong', { className: 'mm-inspector-object' },
               target
                 ? (selected.size > 1
@@ -7125,7 +7134,16 @@ window.__ModuleLoader__.load({
             }, h(Icon, { name: 'sticky', size: 14 }), h('span', null, 'Add a sticky note')))
           : null,
         loading ? h('div', { className: 'mm-canvas-loading' }, 'Loading the board…') : null,
-        inspectorOpen ? canvasInspectorView() : null,
+        inspectorOpen ? canvasInspectorView() : h('button', {
+          type: 'button',
+          className: 'mm-canvas-inspector-open',
+          title: 'Show the inspector',
+          'aria-label': 'Show the inspector',
+          onClick: () => {
+            setInspectorOpen(true);
+            writeStoredValue('moments-notes:canvas-inspector', true);
+          },
+        }, h('span', { className: 'mm-canvas-inspector-open-icon' }, h(Icon, { name: 'chevron', size: 13 })), 'Inspector'),
         versionsOpen
           ? h('div', {
             className: 'mm-canvas-versions',
@@ -8514,7 +8532,16 @@ window.__ModuleLoader__.load({
       .mm-inspector-swatch.is-active{outline:2px solid var(--mm-accent-base);outline-offset:1px}
       .mm-canvas-body.is-inspector .mm-canvas-zoom{right:296px}
       .mm-canvas-style.is-hidden{display:none}
-      .mm-inspector-header{display:flex;flex-direction:column;gap:4px;padding:16px 12px 12px;border-bottom:1px solid var(--mm-line)}
+      .mm-inspector-header{position:relative;display:flex;flex-direction:column;gap:4px;padding:16px 40px 12px 12px;border-bottom:1px solid var(--mm-line)}
+      /* The way out of the panel lives in the panel: a chevron at its top edge. */
+      .mm-inspector-collapse{position:absolute;top:10px;right:8px;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+      .mm-inspector-collapse:hover{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
+      .mm-inspector-collapse:focus-visible{outline:2px solid var(--mm-accent-base);outline-offset:1px}
+      /* Collapsed: a tab stays where the panel was, so reopening is one click. */
+      .mm-canvas-inspector-open{position:absolute;top:8px;right:8px;z-index:6;display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border:1px solid var(--mm-line-strong);border-radius:var(--dsw-radius-sm);background:var(--mm-overlay);box-shadow:var(--mm-shadow-card);color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}
+      .mm-canvas-inspector-open:hover{color:var(--dsw-alias-label-primary);border-color:var(--mm-accent-base)}
+      .mm-canvas-inspector-open:focus-visible{outline:2px solid var(--mm-accent-base);outline-offset:1px}
+      .mm-canvas-inspector-open-icon{display:inline-flex;transform:scaleX(-1)}
       .mm-inspector-object{overflow:hidden;color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600;line-height:1.4;text-overflow:ellipsis;white-space:nowrap}
       .mm-inspector-meta{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.45}
       .mm-canvas-inspector{position:absolute;top:0;right:0;bottom:0;width:280px;max-width:100%;z-index:5;display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;border-left:1px solid var(--mm-line);background:var(--mm-surface-1);scrollbar-width:none}
