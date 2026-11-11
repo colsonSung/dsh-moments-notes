@@ -231,3 +231,153 @@ test('every design tool reports an unavailable store instead of throwing', async
     assert.equal(result.data.error.code, 'CANVAS_UNAVAILABLE');
   }
 });
+
+/* ------------------------------------------- reading the board back as data */
+
+const ONE_PIXEL_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+async function withInspect(callback) {
+  const directory = await mkdtemp(join(tmpdir(), 'moments-inspect-'));
+  const repository = await openCanvasRepository({ filePath: join(directory, 'canvases.json') });
+  const captured = [];
+  const snapshots = {
+    request: async (input) => {
+      captured.push(input);
+      return { dataUrl: ONE_PIXEL_PNG };
+    },
+  };
+  const reports = [];
+  const importReports = {
+    latest: async (boardId) => reports.find((report) => report.boardId === boardId) ?? null,
+    list: async (boardId) => reports.filter((report) => report.boardId === boardId),
+  };
+  const byName = new Map(createDesignTools({
+    getCanvasStore: () => repository,
+    snapshots,
+    importReports,
+    snapshotDir: join(directory, 'snapshots'),
+  }).map((tool) => [tool.name, tool]));
+  try {
+    await callback({
+      repository,
+      captured,
+      reports,
+      directory,
+      begin: byName.get('design_begin'),
+      nodes: byName.get('design_nodes'),
+      tokens: byName.get('design_tokens'),
+      inspect: byName.get('design_inspect'),
+    });
+  } finally {
+    repository.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test('design_inspect view "issues" reports what a reviewer would say', async () => {
+  await withInspect(async ({ begin, nodes, inspect }) => {
+    const created = await begin.execute({ title: 'Broken', width: 800, height: 600 });
+    const boardId = created.data.boardId;
+    await nodes.execute({
+      boardId,
+      ops: [{
+        op: 'insert',
+        node: {
+          type: 'shape', shape: 'rect', x: 40, y: 40, w: 120, h: 20,
+          fill: '#ffffff', text: 'A sentence that cannot possibly fit in this box',
+        },
+      }],
+    });
+    const result = await inspect.execute({ boardId, view: 'issues' });
+    assert.equal(result.ok, true);
+    assert.ok(result.data.issues.some((issue) => issue.code === 'text-overflow'), result.summary);
+    assert.ok(result.data.checks.nodes > 0);
+    assert.match(result.summary, /problem/);
+  });
+});
+
+test('design_inspect view "issues" says a clean board passes instead of returning nothing', async () => {
+  await withInspect(async ({ begin, inspect }) => {
+    const created = await begin.execute({ title: 'Clean', width: 800, height: 600 });
+    const result = await inspect.execute({ boardId: created.data.boardId, view: 'issues' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.data.issues, []);
+    assert.match(result.summary, /passes/);
+  });
+});
+
+test('design_inspect view "import" answers with the stored report, or says there is none', async () => {
+  await withInspect(async ({ begin, inspect, reports }) => {
+    const created = await begin.execute({ title: 'Imported', width: 800, height: 600 });
+    const boardId = created.data.boardId;
+    const empty = await inspect.execute({ boardId, view: 'import' });
+    assert.equal(empty.data.report, null);
+    assert.match(empty.summary, /no recorded Figma import/);
+
+    reports.push({
+      id: 'report-1',
+      boardId,
+      source: 'flow.jam',
+      at: Date.now(),
+      nodeCount: 1107,
+      imported: { shape: 168, text: 40 },
+      skipped: { symbol: 78, unknown: 412 },
+      warnings: ['93 images came through as thumbnails'],
+      skippedSamples: { symbol: [{ name: 'Button/Primary', type: 'SYMBOL' }] },
+    });
+    const stored = await inspect.execute({ boardId, view: 'import' });
+    assert.equal(stored.data.report.nodeCount, 1107);
+    assert.match(stored.summary, /78 symbol/);
+    assert.match(stored.summary, /thumbnails/);
+  });
+});
+
+test('design_inspect view "image" writes the picture the canvas handed back', async () => {
+  await withInspect(async ({ begin, nodes, inspect, captured, directory }) => {
+    const created = await begin.execute({ title: 'Look at me', width: 800, height: 600 });
+    const boardId = created.data.boardId;
+    await nodes.execute({
+      boardId,
+      ops: [{ op: 'insert', node: { type: 'text', x: 20, y: 20, w: 300, h: 40, text: 'Hello' } }],
+    });
+    const { existsSync, statSync } = await import('node:fs');
+    const result = await inspect.execute({ boardId, view: 'image', region: { x: 0, y: 0, w: 400, h: 200 }, scale: 2 });
+    assert.equal(result.ok, true, result.summary);
+    assert.equal(captured.length, 1);
+    assert.deepEqual(captured[0].region, { x: 0, y: 0, w: 400, h: 200 });
+    assert.equal(captured[0].scale, 2);
+    assert.ok(result.data.image.path.startsWith(join(directory, 'snapshots')));
+    assert.ok(existsSync(result.data.image.path));
+    assert.ok(statSync(result.data.image.path).size > 0);
+  });
+});
+
+test('design_inspect view "image" is honest when no canvas answers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'moments-inspect-'));
+  const repository = await openCanvasRepository({ filePath: join(directory, 'canvases.json') });
+  const byName = new Map(createDesignTools({
+    getCanvasStore: () => repository,
+    snapshots: { request: async () => null },
+    snapshotDir: join(directory, 'snapshots'),
+  }).map((tool) => [tool.name, tool]));
+  try {
+    const created = await byName.get('design_begin').execute({ title: 'Closed', width: 800, height: 600 });
+    const result = await byName.get('design_inspect').execute({ boardId: created.data.boardId, view: 'image' });
+    assert.equal(result.ok, false);
+    assert.equal(result.data.reason, 'no-canvas');
+    assert.match(result.summary, /open Moments/);
+    assert.equal(result.data.issues.length, 0);
+  } finally {
+    repository.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('design_inspect still lists boards when no boardId is given', async () => {
+  await withInspect(async ({ begin, inspect }) => {
+    await begin.execute({ title: 'One' });
+    await begin.execute({ title: 'Two' });
+    const result = await inspect.execute({});
+    assert.equal(result.data.boards.length, 2);
+  });
+});

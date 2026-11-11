@@ -9,7 +9,8 @@ const METHODS = new Set([
   'canvas-list', 'canvas-load', 'canvas-create', 'canvas-save', 'canvas-star', 'canvas-delete',
   'canvas-comment-add', 'canvas-comment-resolve', 'canvas-comment-delete',
   'canvas-asset-save', 'canvas-import-fig', 'canvas-export', 'canvas-arrange',
-  'canvas-history', 'canvas-restore',
+  'canvas-history', 'canvas-restore', 'canvas-import-report',
+  'snapshot-wait', 'snapshot-put',
 ]);
 
 function operationError(message) {
@@ -85,7 +86,9 @@ function boundedLimit(value, fallback = 5, maximum = 20) {
 }
 
 /** Expose the repository through one UI operation contract. */
-export function createHostService({ repository, floatBridge, canvasRepository, assets, diagnostics }) {
+export function createHostService({
+  repository, floatBridge, canvasRepository, assets, diagnostics, importReports, snapshots,
+}) {
   if (!repository) throw new Error('The note store is not ready yet');
 
   function canvasStore() {
@@ -240,7 +243,45 @@ export function createHostService({ repository, floatBridge, canvasRepository, a
               ? (cameraForImport(imported.nodes) ?? current.camera)
               : current.camera,
           });
-          return { canvas, report: imported.report };
+          // The counts are only useful once; the report is the answer to "what
+          // did this file not bring in?", which is asked days later.
+          let reportId = null;
+          if (importReports) {
+            try {
+              const saved = await importReports.record({
+                ...imported.report,
+                boardId: canvas.id,
+                source: optionalImportTitle(payload),
+                at: Date.now(),
+              });
+              reportId = saved?.id ?? null;
+            } catch {
+              // Evidence is never worth failing an import for.
+            }
+          }
+          return { canvas, report: imported.report, reportId };
+        }
+        case 'canvas-import-report': {
+          if (!importReports) return { report: null, reports: [] };
+          const boardId = requiredCanvasId(payload);
+          const [report, reports] = await Promise.all([
+            importReports.latest(boardId),
+            importReports.list(boardId),
+          ]);
+          return { report, reports };
+        }
+        case 'snapshot-wait': {
+          // The open canvas parks here; the Host answers as soon as an agent
+          // asks for a picture. A closed canvas simply never asks.
+          if (!snapshots) return { job: null };
+          const job = await snapshots.next(payload.holdMs);
+          return { job };
+        }
+        case 'snapshot-put': {
+          if (!snapshots) throw operationError('The snapshot channel is not ready yet');
+          const accepted = snapshots.fulfill(payload.jobId, payload.dataUrl);
+          if (!accepted) throw operationError('That snapshot request is no longer waiting');
+          return { accepted: true };
         }
         case 'canvas-comment-add': {
           if (typeof payload.body !== 'string' || !payload.body.trim()) {

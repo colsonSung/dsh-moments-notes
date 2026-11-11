@@ -13,6 +13,8 @@ import { dirname } from 'node:path';
 
 import { CANVAS_LIMITS, summarizeCanvas } from './canvas-domain.js';
 import { exportHtml, exportSpec, exportSvg } from './design-export.js';
+import { analyzeDesign } from './design-issues.js';
+import { dataUrlBytes } from './design-snapshot.js';
 
 const CONTAINERS = new Set(['group', 'frame', 'component']);
 const MAX_OPS = 200;
@@ -34,6 +36,31 @@ function isObject(value) {
 
 function cloneJson(value) {
   return structuredClone(value);
+}
+
+/** A number inside a range; anything unusable falls back to the default. */
+function boundNumber(value, fallback, minimum, maximum, label) {
+  if (value === undefined || value === null) return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw designError('VALIDATION_ERROR', `${label} must be a number`);
+  if (number < minimum || number > maximum) {
+    throw designError('VALIDATION_ERROR', `${label} must be between ${minimum} and ${maximum}`);
+  }
+  return number;
+}
+
+/** Join a directory and a file name without importing path on the hot path. */
+function joinPath(directory, name) {
+  return `${String(directory).replace(/[\\/]+$/, '')}/${name}`;
+}
+
+/** A board title as a file name stem a shell will not argue with. */
+function safeFileStem(title) {
+  const stem = String(title || 'board')
+    .replace(/[^\w\u4e00-\u9fa5-]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return stem || 'board';
 }
 
 function boundInteger(value, fallback, minimum, maximum, label) {
@@ -292,7 +319,9 @@ const outputSchema = {
 };
 
 /** Tools that author a design board, one scene operation batch at a time. */
-export function createDesignTools({ getCanvasStore, diagnostics }) {
+export function createDesignTools({
+  getCanvasStore, diagnostics, snapshots, importReports, snapshotDir,
+}) {
   // A tool failure is a real failure too: it lands in the same log as the
   // Host route, so the agent and the person read one story.
   const reportFailure = async (tool, error) => {
@@ -477,14 +506,29 @@ export function createDesignTools({ getCanvasStore, diagnostics }) {
   const inspect = {
     name: 'design_inspect',
     description:
-      'Read back design boards: with no boardId it lists the boards in the workspace; with a boardId it returns that board\'s nodes (bounded) so later edits can target exact ids instead of guessing.',
+      'Read back design boards: with no boardId it lists the boards in the workspace; with a boardId it returns that board\'s nodes (bounded) so later edits can target exact ids instead of guessing. view:"issues" adds what a reviewer would say about the board (text running past its box, peers on top of each other, a node outside its frame, unreadable ink); view:"image" asks the open Design panel for a PNG of the board and returns its path, so the caller can look at the drawing itself instead of trusting the geometry; view:"import" returns the latest Figma import report for the board.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         boardId: { type: 'string', description: 'Board to read; omit to list boards.' },
+        view: {
+          type: 'string',
+          enum: ['summary', 'issues', 'image', 'import'],
+          description: 'summary (default) lists nodes; issues reports what breaks a rule; image writes a PNG of the open board and returns its path; import returns the last Figma import report.',
+        },
         nodeIds: { type: 'array', items: { type: 'string' }, maxItems: MAX_INSPECT_NODES, description: 'Only these node ids.' },
         limit: { type: 'integer', minimum: 1, maximum: MAX_INSPECT_NODES, description: 'Maximum nodes to return; defaults to 120.' },
+        region: {
+          type: 'object',
+          additionalProperties: false,
+          description: 'For view:"image": the board area to render, in board coordinates.',
+          properties: {
+            x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' },
+          },
+        },
+        scale: { type: 'number', minimum: 0.5, maximum: 3, description: 'For view:"image": pixels per board unit; defaults to 2.' },
+        waitMs: { type: 'integer', minimum: 1000, maximum: 30000, description: 'For view:"image": how long to wait for the Design panel to answer; defaults to 12000.' },
       },
     },
     output: { schema: outputSchema, render: (_args, value) => [{ type: 'text', text: value?.summary ?? '' }], presentationMeta: designPresentation('design_finish') },
@@ -502,6 +546,91 @@ export function createDesignTools({ getCanvasStore, diagnostics }) {
         }
         const boardId = boardIdOf(args.boardId);
         const document = await canvasStore.load(boardId);
+        const view = ['summary', 'issues', 'image', 'import'].includes(args.view) ? args.view : 'summary';
+
+        // The report of what an import left behind belongs to the board, not to
+        // the nodes, so it is readable long after the import dialog closed.
+        if (view === 'import') {
+          if (!importReports) {
+            return {
+              ok: false,
+              summary: 'This build has no import report store.',
+              data: { report: null },
+            };
+          }
+          const report = await importReports.latest(boardId);
+          const skipped = report ? Object.entries(report.skipped || {}).map(([kind, value]) => `${value} ${kind}`).join(', ') : '';
+          return {
+            ok: true,
+            summary: report
+              ? `Last import of "${document.title}": ${report.nodeCount} nodes in the file, ${Object.values(report.imported || {}).reduce((total, value) => total + value, 0)} imported${skipped ? `, skipped ${skipped}` : ''}${report.warnings.length ? `; ${report.warnings[0]}` : ''}.`
+              : `"${document.title}" has no recorded Figma import.`,
+            data: { report },
+          };
+        }
+
+        // Everything a person would notice by looking at the board, computed
+        // from the document: this is the half of "look at it" that never needs
+        // a browser.
+        if (view === 'issues') {
+          const analysis = analyzeDesign(document);
+          const first = analysis.issues[0];
+          return {
+            ok: true,
+            summary: analysis.issues.length
+              ? `${analysis.issues.length} problem(s) on "${document.title}": ${first.code} — ${first.message}${analysis.issues.length > 1 ? ` (+${analysis.issues.length - 1} more)` : ''}`
+              : `"${document.title}" passes the layout checks: ${analysis.summary.nodes} nodes, no overflow, overlap, stray or unreadable text.`,
+            data: { ...boardDigest(document), issues: analysis.issues, checks: analysis.summary },
+          };
+        }
+
+        // The picture itself: the Host cannot draw a board, so it asks the open
+        // Design panel and saves what comes back.
+        if (view === 'image') {
+          const analysis = analyzeDesign(document);
+          if (!snapshots || !snapshotDir) {
+            return {
+              ok: false,
+              summary: 'This build cannot capture the canvas.',
+              data: { issues: analysis.issues, checks: analysis.summary },
+            };
+          }
+          const captured = await snapshots.request({
+            boardId,
+            region: args.region,
+            scale: boundNumber(args.scale, 2, 0.5, 3, 'scale'),
+            waitMs: boundInteger(args.waitMs, 12000, 1000, 30000, 'waitMs'),
+          });
+          if (!captured) {
+            return {
+              ok: false,
+              summary: 'No Design panel answered: open Moments → Design on this board, then ask again. The layout checks still apply.',
+              data: { issues: analysis.issues, checks: analysis.summary, reason: 'no-canvas' },
+            };
+          }
+          const decoded = dataUrlBytes(captured.dataUrl);
+          if (!decoded) {
+            return {
+              ok: false,
+              summary: 'The Design panel answered with something that is not a PNG.',
+              data: { issues: analysis.issues, checks: analysis.summary },
+            };
+          }
+          await mkdir(snapshotDir, { recursive: true });
+          const filePath = joinPath(snapshotDir, `${safeFileStem(document.title)}-${Date.now()}.${decoded.type === 'jpeg' ? 'jpg' : 'png'}`);
+          await writeFile(filePath, decoded.bytes);
+          return {
+            ok: true,
+            summary: `Wrote a ${decoded.type.toUpperCase()} of "${document.title}" to ${filePath} (${Math.round(decoded.bytes.length / 1024)} KB). Look at it before claiming the design is done.`,
+            data: {
+              ...boardDigest(document),
+              image: { path: filePath, bytes: decoded.bytes.length, type: decoded.type },
+              issues: analysis.issues,
+              checks: analysis.summary,
+            },
+          };
+        }
+
         const wanted = Array.isArray(args.nodeIds) && args.nodeIds.length
           ? new Set(args.nodeIds.filter((id) => typeof id === 'string').map((id) => id.trim()))
           : null;

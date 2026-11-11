@@ -394,6 +394,18 @@ export async function importFigFile(bytes, options = {}) {
     warnings: [],
     pages: [],
     nodeCount: allNodes.length,
+    // Which nodes were left behind, not only how many: a count nobody can act
+    // on is a dead end once the import dialog is gone.
+    skippedSamples: { slice: [], symbol: [], unknown: [] },
+  };
+  const sampleSkipped = (kind, node) => {
+    const list = report.skippedSamples[kind];
+    if (!Array.isArray(list) || list.length >= 20) return;
+    list.push({
+      id: typeof fig.nodeId === 'function' ? fig.nodeId(node) : null,
+      name: String(node?.name || '').slice(0, 80),
+      type: String(node?.type || ''),
+    });
   };
   const seenImages = new Map();
   const idOf = (node) => fig.nodeId(node) ?? randomUUID();
@@ -610,6 +622,7 @@ export async function importFigFile(bytes, options = {}) {
         };
       }
       report.skipped.unknown += 1;
+      sampleSkipped('unknown', node);
       return null;
     }
 
@@ -665,12 +678,14 @@ export async function importFigFile(bytes, options = {}) {
 
     if (node.type === 'SLICE') {
       report.skipped.slice += 1;
+      sampleSkipped('slice', node);
       return null;
     }
 
     // A component definition is not content; the instances that use it are.
     if (node.type === 'SYMBOL') {
       report.skipped.symbol += 1;
+      sampleSkipped('symbol', node);
       return null;
     }
 
@@ -688,6 +703,7 @@ export async function importFigFile(bytes, options = {}) {
     }
 
     report.skipped.unknown += 1;
+    sampleSkipped('unknown', node);
     return null;
   };
 
@@ -774,6 +790,7 @@ export async function importFigFile(bytes, options = {}) {
       if ((item.type === 'group' || item.type === 'frame') && item.members.length === 0) {
         built.splice(index, 1);
         report.skipped.unknown += 1;
+        sampleSkipped('unknown', item);
         if (!report.warnings.includes('Intermediate containers were merged away')) {
           report.warnings.push('Intermediate containers were merged away');
         }

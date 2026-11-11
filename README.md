@@ -90,11 +90,42 @@ ordinary board you can keep editing by hand:
 | `design_tokens` | define colour tokens and type styles, light and dark |
 | `design_nodes` | one transaction of inserts, updates and deletes |
 | `design_finish` | validate and report the board digest |
-| `design_inspect` | read back the boards, or one board's nodes |
+| `design_inspect` | read back a board: its nodes, its problems, a picture of it, or its last import report |
 | `design_export` | export SVG, HTML or the spec JSON |
 
 The whole batch commits or is rejected together, and tokens, auto layout and instance
 expansion are recomputed on the Host at save time, so the file never drifts from the rules.
+
+### The agent can check its own work
+
+A model that writes boxes cannot tell whether the sentence inside one of them fits, so
+`design_inspect` answers three questions the geometry alone cannot:
+
+| `view` | What comes back |
+| --- | --- |
+| `issues` | Text past its box, peers covering each other, a member outside its frame, ink below 4.5:1 — each with a `nodeId`, a sentence and a suggested fix |
+| `image` | A PNG of the board written to `snapshots/`, with its path, so the caller can look at the drawing instead of trusting the model's description of it |
+| `import` | What the last Figma import brought in, and what it left behind |
+
+`view: "image"` does not need the Design panel to be open on screen: a responder ships
+with the plugin, reads the saved board, renders it with the same renderer the export
+uses and sends the PNG back — so an agent can look at a board while you are in the
+conversation view. Requests can name a `region` to inspect one card at `scale` up to 3×.
+
+### A skill, not just tools
+
+Tool schemas say what may be written; they do not object to thirty absolutely-positioned
+rectangles. The plugin ships `skills/moments-design/`, registered as a bundled skill, that
+says what is worth writing: stacks before coordinates, tokens before literals, components
+before copies, and check `issues` plus the picture before calling a design done.
+
+### Import reports that outlive the import
+
+A Figma import tells the truth exactly once, in the toast that scrolls away. The report is
+now kept in `import-reports.json`: node counts, per-kind imports, skipped
+components/slices/unknowns with up to 20 sample names each, and thumbnail warnings.
+`⋯ → Last import report` shows it in the canvas; `design_inspect { view: "import" }` reads
+the same record. A week later, "was this area empty in the source?" is still answerable.
 
 ## Notes that survive
 

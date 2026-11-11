@@ -20,7 +20,9 @@ test('client is a native module-loader bundle using only React.createElement', (
   includes(/factory\s*\(\s*require\s*\)/, 'uses the loader factory');
   includes(/require\(\s*['"]react['"]\s*\)/, 'loads React from Harness');
   includes(/React\.createElement/, 'uses React.createElement');
-  assert.doesNotMatch(source, /\b(?:import|export)\s+(?:default\s+)?(?:[\w*{]|React\b)/, 'must not contain module imports/exports');
+  // Anchored at a line start: the guard is about module statements, and a
+  // sentence in a comment that happens to start a word with "import" is not one.
+  assert.doesNotMatch(source, /^[ \t]*(?:import|export)\s+(?:default\s+)?(?:[\w*{]|React\b)/m, 'must not contain module imports/exports');
   assert.doesNotMatch(source, /require\(\s*['"](?!react['"])/, 'must not import external Harness UI components');
 });
 
@@ -448,6 +450,25 @@ test('does not embed frames, remote dependencies or fake controls', () => {
   assert.doesNotMatch(source, /onClick\s*:\s*\(\s*\)\s*=>\s*\{\s*\}/, 'no empty click handlers');
   assert.doesNotMatch(source, /document\.body|document\.documentElement/, 'does not write DOM outside the plugin component');
   includes(/disabled\s*:/, 'uses real disabled states');
+});
+
+test('the canvas answers an agent asking for a picture, wherever the person is', () => {
+  // The responder runs with the plugin rather than with the Design panel: an
+  // agent asks while the person is in the conversation view.
+  includes(/function startSnapshotResponder\(\)/, 'installs a snapshot responder');
+  includes(/api\(\s*'snapshot-wait'/, 'parks a request for the Host');
+  includes(/api\(\s*'snapshot-put'/, 'sends the picture back');
+  includes(/api\(\s*'canvas-load'/, 'reads the saved board instead of the mounted one');
+  includes(/startSnapshotResponder\(\), 'moments-notes: canvas snapshots'/, 'starts and stops with the plugin');
+  includes(/Math\.min\(wanted,\s*cap \/ width\)/, 'caps the raster instead of trusting the board size');
+});
+
+test('the board menu offers the last Figma import report', () => {
+  includes(/api\(\s*'canvas-import-report'/, 'reads the stored report');
+  includes(/Last import report/, 'names the entry for a person');
+  includes(/mm-canvas-report/, 'renders it in a panel, not a toast');
+  includes(/not imported from a Figma file/, 'says plainly when there is no report');
+  includes(/skippedSamples/, 'shows which nodes did not come through');
 });
 
 test('the panel offers a quick capture button in the Harness chrome', () => {

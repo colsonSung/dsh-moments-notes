@@ -5,6 +5,9 @@ import { dirname, join } from 'node:path';
 import { openRepository } from './lib/repository.js';
 import { openCanvasRepository } from './lib/canvas-repository.js';
 import { createHostService, createMemoTool } from './lib/host-service.js';
+import { openImportReports } from './lib/import-reports.js';
+import { createSnapshotBroker } from './lib/design-snapshot.js';
+import { registerDesignSkill } from './lib/design-skill.js';
 import { createDesignTools } from './lib/design-tools.js';
 import { createDesignPreviewHandler } from './lib/design-export.js';
 import { createDraftStore } from './lib/draft.js';
@@ -18,7 +21,7 @@ import { createFloatBridge } from './lib/float-bridge.js';
 
 export { ROUTE } from './lib/http.js';
 export const name = 'moments-notes';
-export const inject = ['tools', 'connection', 'profileContext'];
+export const inject = ['tools', 'connection', 'profileContext', 'skills'];
 
 /** Route of the standalone floating mini window. */
 export const MINI_ROUTE = '/api/moments-notes/mini';
@@ -107,7 +110,17 @@ export async function apply(ctx) {
     // error the browser reports, so a message on screen can be traced.
     const diagnostics = await openDiagnostics({ filePath: join(dirname(dataFile), 'diagnostics.log') })
       .catch(() => null);
-    const service = createHostService({ repository, floatBridge, canvasRepository, assets: assetStore, diagnostics });
+    // What a Figma import left behind is evidence about a board: it outlives the
+    // dialog that showed it, so it lives in its own store.
+    const importReports = await openImportReports({ filePath: join(dirname(dataFile), 'import-reports.json') })
+      .catch(() => null);
+    // The Host cannot draw a board; the open Design panel can. This broker is
+    // the question, and the panel answers it.
+    const snapshots = createSnapshotBroker();
+    const snapshotDir = join(dirname(dataFile), 'snapshots');
+    const service = createHostService({
+      repository, floatBridge, canvasRepository, assets: assetStore, diagnostics, importReports, snapshots,
+    });
     ctx.provide?.('momentsNotes', service);
     disposeRoute = ctx.connection.fetch.register({
       path: ROUTE,
@@ -144,10 +157,20 @@ export async function apply(ctx) {
     disposeTool = ctx.tools.register(createMemoTool({ repository }));
     // The agent authors the design canvas through the same Host store the
     // Design panel reads, so an agent-built board is an ordinary board.
-    const designDisposers = createDesignTools({ getCanvasStore: () => canvasRepository, diagnostics })
-      .map((tool) => ctx.tools.register(tool));
+    const designDisposers = createDesignTools({
+      getCanvasStore: () => canvasRepository,
+      diagnostics,
+      snapshots,
+      importReports,
+      snapshotDir,
+    }).map((tool) => ctx.tools.register(tool));
+    // The skill is the half of the tool surface that says how to draw well:
+    // tools describe what may be written, the skill describes what is worth
+    // writing and what to check before saying a design is done.
+    const disposeSkill = registerDesignSkill(ctx);
     disposeDesignTools = () => {
       for (const dispose of designDisposers) dispose();
+      disposeSkill?.();
     };
     const purgeTimer = setInterval(() => {
       repository.purgeExpired().catch((error) => {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-moments-notes",
-  "version": "3.4.3",
+  "version": "3.5.0",
   "private": true,
   "type": "module",
   "description": "Moments is a local-first notes workspace for DeepSeek Harness, and a native design editor: an agent-authorable canvas with a design engine (tokens, auto layout, components, vector paths, export), real Figma / FigJam import, and the capture float that stays on top of every app.",
@@ -37,9 +37,11 @@
     "client.js",
     "cordis.patch.yml",
     "lib/*.js",
+    "skills",
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "CHANGELOG.md",
     "native/build.sh",
     "native/*.swift",
     "native/README.md"

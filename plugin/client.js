@@ -2683,52 +2683,288 @@ window.__ModuleLoader__.load({
         .replace(/"/g, '&quot;');
     }
 
-    /** The scene as one SVG document, ready to be saved or rasterised. */
-    function canvasExportSvg(nodes, edges, options = {}) {
-      const bounds = canvasBoundsOf(nodes);
-      if (!bounds) return '';
-      const padding = options.padding ?? 24;
-      const width = Math.ceil(bounds.w + padding * 2);
-      const height = Math.ceil(bounds.h + padding * 2);
+    /**
+     * The scene as one SVG document, ready to be saved or rasterised.
+     *
+     * This is not a schematic: it draws the board the way the canvas draws it —
+     * the authored type sizes and weights, imported pictures, shadows, gradients
+     * and vector paths. A PNG of a board is what a person shows someone else, and
+     * the same file is what an agent looks at when it checks its own work, so a
+     * renderer that quietly dropped images and shrank text to 13px would make
+     * both of them wrong.
+     *
+     * Async because pictures are fetched and embedded: the saved picture must
+     * not depend on the canvas being on screen or on the asset route staying alive.
+     *
+     * @param {object[]} nodes
+     * @param {object[]} edges
+     * @param {{region?: {x,y,w,h}, padding?: number, background?: string,
+     *   ink?: string, line?: string, title?: string,
+     *   resolveAsset?: (assetId: string, kind?: string) => Promise<string|null>}} options
+     */
+    async function canvasSceneSvg(nodes, edges, options = {}) {
+      const whole = canvasBoundsOf(nodes);
+      if (!whole) return '';
+      const region = options.region && options.region.w > 0 && options.region.h > 0
+        ? {
+          x: options.region.x,
+          y: options.region.y,
+          w: options.region.w,
+          h: options.region.h,
+        }
+        : null;
+      const bounds = region || whole;
+      const padding = region ? 0 : (options.padding ?? 24);
+      const width = Math.max(1, Math.ceil(bounds.w + padding * 2));
+      const height = Math.max(1, Math.ceil(bounds.h + padding * 2));
       const offset = { x: padding - bounds.x, y: padding - bounds.y };
-      const parts = [
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
-        `<rect width="${width}" height="${height}" fill="${options.background || 'white'}"/>`,
-      ];
-      const byId = new Map(nodes.map((node) => [node.id, node]));
+      const defs = [];
+      const containerBody = [];
+      const edgeBody = [];
+      const leafBody = [];
+      const shadowIds = new Map();
+      const gradientIds = new Map();
+      const assetCache = new Map();
+
+      const esc = canvasEscapeXml;
+      const num = (value) => Number.isFinite(value) ? Math.round(value * 100) / 100 : 0;
+      const hexWithAlpha = (color) => {
+        const match = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(String(color || ''));
+        if (!match) return { color: color || 'rgba(0,0,0,0.18)', alpha: null };
+        return { color: `#${match[1]}`, alpha: match[2] ? parseInt(match[2], 16) / 255 : null };
+      };
+      const shadowFilter = (shadow) => {
+        if (!shadow) return null;
+        const key = `${shadow.x}|${shadow.y}|${shadow.blur}|${shadow.color}`;
+        if (shadowIds.has(key)) return shadowIds.get(key);
+        const id = `sh-${shadowIds.size}`;
+        const { color, alpha } = hexWithAlpha(shadow.color);
+        defs.push(`<filter id="${id}" x="-60%" y="-60%" width="220%" height="220%">`
+          + `<feDropShadow dx="${num(shadow.x || 0)}" dy="${num(shadow.y || 0)}" `
+          + `stdDeviation="${num(Math.max(0, (shadow.blur || 0) / 2))}" flood-color="${color}"`
+          + `${alpha === null ? '' : ` flood-opacity="${num(alpha)}"`}/></filter>`);
+        shadowIds.set(key, id);
+        return id;
+      };
+      const gradientRef = (gradient) => {
+        if (!gradient || !gradient.from || !gradient.to) return null;
+        const key = `${gradient.from}|${gradient.to}|${gradient.angle || 0}`;
+        if (gradientIds.has(key)) return gradientIds.get(key);
+        const id = `gr-${gradientIds.size}`;
+        const angle = ((Number(gradient.angle) || 0) * Math.PI) / 180;
+        const dx = Math.cos(angle) / 2;
+        const dy = Math.sin(angle) / 2;
+        defs.push(`<linearGradient id="${id}" x1="${num(0.5 - dx)}" y1="${num(0.5 - dy)}" x2="${num(0.5 + dx)}" y2="${num(0.5 + dy)}">`
+          + `<stop offset="0" stop-color="${esc(gradient.from)}"/><stop offset="1" stop-color="${esc(gradient.to)}"/></linearGradient>`);
+        gradientIds.set(key, id);
+        return id;
+      };
+
+      // Pictures are bytes, not URLs: a file that points at the Host route
+      // renders blank the moment it leaves this machine.
+      const assetHref = async (node) => {
+        const assetId = node.assetId;
+        if (!assetId) return null;
+        if (assetCache.has(assetId)) return assetCache.get(assetId);
+        let href = null;
+        try {
+          if (typeof options.resolveAsset === 'function') {
+            href = await options.resolveAsset(assetId, node.kind);
+          } else {
+            const response = await fetch(canvasAssetUrl(assetId, node.kind), { credentials: 'same-origin' });
+            if (response.ok) {
+              const blob = await response.blob();
+              href = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(String(reader.result || ''));
+                reader.onerror = () => resolve(null);
+                reader.readAsDataURL(blob);
+              });
+            }
+          }
+        } catch {
+          href = null;
+        }
+        assetCache.set(assetId, href);
+        return href;
+      };
+
+      // Text is measured, not guessed: the width a sentence needs decides where
+      // its lines break, and a broken line is what the box height must hold.
+      // Measuring needs a real 2D context; a test renderer or an odd browser may
+      // not have one, and an export must never fail because it could not measure.
+      const measure = (() => {
+        try {
+          const context = document.createElement('canvas').getContext('2d');
+          return context && typeof context.measureText === 'function' ? context : null;
+        } catch {
+          return null;
+        }
+      })();
+      const fontOf = (node) => {
+        const size = Number(node.fontSize) > 0 ? Number(node.fontSize) : 14;
+        const weight = Number(node.fontWeight) > 0 ? Number(node.fontWeight) : 400;
+        const family = CANVAS_FONT_STACKS[node.fontFamily] || CANVAS_FONT_STACKS.sans;
+        return { size, weight, family, css: `${weight} ${size}px ${family}` };
+      };
+      const wrapLines = (node, text) => {
+        const font = fontOf(node);
+        const tracking = Number(node.letterSpacing) || 0;
+        const inner = Math.max(8, (Number(node.w) || 0) - canvasTextInset(node) * 2);
+        // Without a measuring context, assume the same average glyph width the
+        // issue analysis uses, so the picture stays close instead of absent.
+        const widthOf = measure
+          ? (value) => {
+            measure.font = font.css;
+            return measure.measureText(value).width + tracking * value.length;
+          }
+          : (value) => value.length * font.size * 0.58 + tracking * value.length;
+        const lines = [];
+        for (const paragraph of String(text).split('\n')) {
+          if (!paragraph) {
+            lines.push('');
+            continue;
+          }
+          // CJK has no spaces to break on, so a long run falls back to glyphs.
+          const units = /[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]/.test(paragraph)
+            ? Array.from(paragraph)
+            : paragraph.split(/(\s+)/);
+          let line = '';
+          for (const unit of units) {
+            const candidate = line + unit;
+            if (line && widthOf(candidate) > inner) {
+              lines.push(line.trimEnd());
+              line = unit.trimStart();
+            } else {
+              line = candidate;
+            }
+          }
+          if (line.trim() || !lines.length) lines.push(line.trimEnd());
+        }
+        return lines;
+      };
+
+      const paintOf = (node, kind = 'fill') => {
+        const gradient = kind === 'fill' ? gradientRef(node.gradient) : null;
+        if (gradient) return `url(#${gradient})`;
+        const value = kind === 'fill' ? node.fill : node.stroke;
+        return value || 'none';
+      };
+
       for (const edge of edges) {
-        const from = byId.get(edge.from);
-        const to = byId.get(edge.to);
+        const from = nodes.find((node) => node.id === edge.from);
+        const to = nodes.find((node) => node.id === edge.to);
         if (!from || !to) continue;
         const curve = canvasEdgePath(edge, from, to);
-        parts.push(`<path d="${curve.d}" fill="none" stroke="${options.line || 'gray'}" stroke-width="1.5" transform="translate(${offset.x} ${offset.y})"/>`);
+        const dash = edge.dash === 'dashed' ? ' stroke-dasharray="8 6"' : '';
+        edgeBody.push(`<path d="${curve.d}" fill="none" stroke="${esc(edge.stroke || options.line || 'rgb(139 145 153)')}" `
+          + `stroke-width="${num(edge.strokeWidth || 2)}"${dash} transform="translate(${num(offset.x)} ${num(offset.y)})"/>`);
         if (edge.label) {
-          parts.push(`<text x="${(curve.middle.x + offset.x).toFixed(1)}" y="${(curve.middle.y + offset.y - 6).toFixed(1)}" font-family="sans-serif" font-size="12" fill="${options.ink || 'black'}" text-anchor="middle">${canvasEscapeXml(edge.label)}</text>`);
+          edgeBody.push(`<text x="${num(curve.middle.x + offset.x)}" y="${num(curve.middle.y + offset.y - 6)}" `
+            + `font-family="${esc(CANVAS_FONT_STACKS.sans)}" font-size="12" fill="${esc(options.ink || 'rgb(16 20 24)')}" `
+            + `text-anchor="middle">${esc(edge.label)}</text>`);
+        }
+        for (const head of canvasEdgeHeads(edge, curve, 1)) {
+          edgeBody.push(`<path d="${head.d}" fill="none" stroke="${esc(head.stroke || edge.stroke || 'rgb(139 145 153)')}" `
+            + `stroke-width="${num(head.strokeWidth || 2)}" stroke-linecap="round" transform="translate(${num(offset.x)} ${num(offset.y)})"/>`);
         }
       }
-      for (const node of nodes) {
-        if (node.type === 'group') continue;
-        const x = (node.x + offset.x).toFixed(1);
-        const y = (node.y + offset.y).toFixed(1);
-        const w = node.w.toFixed(1);
-        const h = node.h.toFixed(1);
-        const fill = node.fill || (node.type === 'note' ? 'white' : node.type === 'sticky' ? 'whitesmoke' : 'none');
-        const stroke = node.stroke || 'none';
-        const strokeWidth = node.strokeWidth || 0;
+
+      // Containers paint their own surface before their members sit on it.
+      const depthOf = new Map();
+      const depth = (node, seen = new Set()) => {
+        if (depthOf.has(node.id)) return depthOf.get(node.id);
+        if (seen.has(node.id)) return 0;
+        seen.add(node.id);
+        const parent = nodes.find((candidate) => (candidate.members || []).includes(node.id));
+        const value = parent ? depth(parent, seen) + 1 : 0;
+        depthOf.set(node.id, value);
+        return value;
+      };
+      const ordered = [...nodes].sort((left, right) => depth(left) - depth(right));
+
+      for (const node of ordered) {
+        const target = CANVAS_CONTAINER_TYPES.has(node.type) ? containerBody : leafBody;
+        if (node.visible === false) continue;
+        const x = num(node.x + offset.x);
+        const y = num(node.y + offset.y);
+        const w = num(node.w);
+        const h = num(node.h);
+        const filter = shadowFilter(node.shadow);
+        const filterAttr = filter ? ` filter="url(#${filter})"` : '';
+        if (node.type === 'group') {
+          target.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none"${node.stroke ? ` stroke="${esc(node.stroke)}" stroke-width="${num(node.strokeWidth || 1)}" stroke-dasharray="4 4"` : ''}/>`);
+          continue;
+        }
+        if (node.type === 'image') {
+          const href = await assetHref(node);
+          target.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${num(Math.min(node.radius || 0, node.w / 2, node.h / 2))}" fill="${esc(node.fill || 'none')}"/>`);
+          if (href) {
+            target.push(`<image x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid slice" href="${esc(href)}"/>`);
+          }
+          continue;
+        }
+        if (node.type === 'shape' && node.shape === 'path' && node.path) {
+          const inset = num(node.strokeWidth ? node.strokeWidth / 2 : 0);
+          target.push(`<path d="${canvasPathD(node)}" fill="${esc(node.fill || 'none')}" stroke="${esc(node.stroke || 'none')}" `
+            + `stroke-width="${num(node.strokeWidth || 0)}" stroke-linejoin="round" stroke-linecap="round" `
+            + `transform="translate(${num(x + inset)} ${num(y + inset)})"${filterAttr}/>`);
+          continue;
+        }
+        const fill = paintOf(node, 'fill') || (node.type === 'sticky' ? (options.sticky || 'rgb(255 243 191)') : node.type === 'note' ? 'white' : 'none');
+        const stroke = node.stroke ? node.stroke : 'none';
+        const radius = num(Math.min(node.radius || 0, (node.w || 0) / 2, (node.h || 0) / 2));
         if (node.type === 'shape' && node.shape === 'ellipse') {
-          parts.push(`<ellipse cx="${(node.x + node.w / 2 + offset.x).toFixed(1)}" cy="${(node.y + node.h / 2 + offset.y).toFixed(1)}" rx="${(node.w / 2).toFixed(1)}" ry="${(node.h / 2).toFixed(1)}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"/>`);
-        } else if (node.type !== 'text') {
-          parts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${Math.min(node.radius || 0, node.w / 2, node.h / 2).toFixed(1)}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"/>`);
+          target.push(`<ellipse cx="${num(node.x + node.w / 2 + offset.x)}" cy="${num(node.y + node.h / 2 + offset.y)}" `
+            + `rx="${num(node.w / 2)}" ry="${num(node.h / 2)}" fill="${esc(fill)}" stroke="${esc(stroke)}" `
+            + `stroke-width="${num(node.strokeWidth || 0)}"${filterAttr}/>`);
+        } else {
+          target.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${radius}" ry="${radius}" `
+            + `fill="${esc(fill)}" stroke="${esc(stroke)}" stroke-width="${num(node.strokeWidth || 0)}"${filterAttr}/>`);
         }
-        const text = node.type === 'note' ? String(node.text || '') : String(node.text || '');
-        if (text) {
-          const anchor = node.textAlign === 'center' ? 'middle' : node.textAlign === 'right' ? 'end' : 'start';
-          const tx = node.textAlign === 'center' ? (node.x + node.w / 2 + offset.x) : node.textAlign === 'right' ? (node.x + node.w - 12 + offset.x) : (node.x + 12 + offset.x);
-          parts.push(`<text x="${tx.toFixed(1)}" y="${(node.y + 30 + offset.y).toFixed(1)}" font-family="sans-serif" font-size="13" fill="${options.ink || 'black'}" text-anchor="${anchor}">${canvasEscapeXml(canvasSummary(text))}</text>`);
+        const text = typeof node.text === 'string' ? node.text : '';
+        if (text.trim()) {
+          const font = fontOf(node);
+          const lines = wrapLines(node, text);
+          const lineHeight = Number(node.lineHeight) > 0 ? Number(node.lineHeight) : 1.25;
+          const inset = canvasTextInset(node);
+          const ink = node.textColor || canvasInkOnFill(node.fill) || options.ink || 'rgb(16 20 24)';
+          const align = node.textAlign === 'center' ? 'middle' : node.textAlign === 'right' ? 'end' : 'start';
+          const textX = node.textAlign === 'center'
+            ? num(node.x + node.w / 2 + offset.x)
+            : node.textAlign === 'right'
+              ? num(node.x + node.w - inset + offset.x)
+              : num(node.x + inset + offset.x);
+          lines.forEach((line, index) => {
+            if (!line) return;
+            const baseline = num(node.y + inset + font.size * (lineHeight * index + 0.82) + offset.y);
+            target.push(`<text x="${textX}" y="${baseline}" font-family="${esc(font.family)}" `
+              + `font-size="${num(font.size)}" font-weight="${font.weight}" `
+              + `${node.letterSpacing ? `letter-spacing="${num(node.letterSpacing)}" ` : ''}`
+              + `fill="${esc(ink)}" text-anchor="${align}">${esc(line)}</text>`);
+          });
         }
       }
-      parts.push('</svg>');
-      return parts.join('');
+
+      return [
+        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+        defs.length ? `<defs>${defs.join('')}</defs>` : '',
+        `<rect width="${width}" height="${height}" fill="${esc(options.background || 'white')}"/>`,
+        ...containerBody,
+        ...edgeBody,
+        ...leafBody,
+        '</svg>',
+      ].join('');
+    }
+
+    /** The container types whose box is a surface for what they hold. */
+    const CANVAS_CONTAINER_TYPES = new Set(['frame', 'group', 'component']);
+
+    /** How far the text sits from the edge of its box, as the canvas pads it. */
+    function canvasTextInset(node) {
+      if (node.type === 'sticky') return 16;
+      if (node.type === 'text') return 0;
+      return 12;
     }
 
     /** Save a file from the browser. */
@@ -2741,6 +2977,16 @@ window.__ModuleLoader__.load({
       link.rel = 'noopener';
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
+
+    /** A blob as a data URL, for the channel that carries it to the Host. */
+    function canvasBlobDataUrl(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('The picture could not be read back'));
+        reader.readAsDataURL(blob);
+      });
     }
 
     /** Rasterise an SVG document into a PNG blob. */
@@ -2775,6 +3021,10 @@ window.__ModuleLoader__.load({
       const [canvasMenu, setCanvasMenu] = useState(null);
       const [selectedEdgeId, setSelectedEdgeId] = useState(null);
       const [barMoreOpen, setBarMoreOpen] = useState(false);
+      // The report of a file import outlives it: it answers "what did this file
+      // not bring in?" days later, so it is a panel, not a toast.
+      const [importReport, setImportReport] = useState(null);
+      const [importReportOpen, setImportReportOpen] = useState(false);
       // The alignment lines a drag is currently riding, in world coordinates.
       const [snapGuides, setSnapGuides] = useState([]);
       // The pen builds its path in world coordinates until the person commits.
@@ -2867,6 +3117,7 @@ window.__ModuleLoader__.load({
       }, [notes]);
 
       useEffect(() => { docRef.current = doc; }, [doc]);
+
       useEffect(() => () => { mountedRef.current = false; clearTimeout(saveTimerRef.current); }, []);
 
       /** Measure the drawing area so nodes can land in the middle of what the person sees. */
@@ -4426,10 +4677,11 @@ window.__ModuleLoader__.load({
           return;
         }
         const title = (current.title || 'Board').replace(/[^\w一-龥-]+/g, '-');
-        const svg = canvasExportSvg(current.nodes, current.edges, {
+        const svg = await canvasSceneSvg(current.nodes, current.edges, {
           background: canvasReadToken(stageRef.current, '--mm-export-background'),
           ink: canvasReadToken(stageRef.current, '--mm-export-ink'),
           line: canvasReadToken(stageRef.current, '--mm-export-line'),
+          sticky: canvasReadToken(stageRef.current, '--mm-note-fill'),
         });
         if (format === 'svg') {
           canvasDownload(`${title}.svg`, svg, 'image/svg+xml');
@@ -4444,6 +4696,18 @@ window.__ModuleLoader__.load({
           onError(failure.message || String(failure));
         }
       }, [onError, onNotice]);
+
+      /** Read the last Figma import report for this board. */
+      const openImportReport = useCallback(async () => {
+        if (!activeId) return;
+        try {
+          const result = await api('canvas-import-report', { id: activeId });
+          setImportReport(result?.report ?? null);
+          setImportReportOpen(true);
+        } catch (failure) {
+          onError?.(failure.message || String(failure));
+        }
+      }, [activeId, api, onError]);
 
       /**
        * Download one handoff format.
@@ -5890,6 +6154,10 @@ window.__ModuleLoader__.load({
         }, h(Icon, { name: 'upload', size: 14 }), 'Import Figma file'),
         h('button', {
           type: 'button', role: 'menuitem', className: 'mm-canvas-bar-item', disabled: !activeId,
+          onClick: () => { setBarMoreOpen(false); void openImportReport(); },
+        }, h(Icon, { name: 'list', size: 14 }), 'Last import report'),
+        h('button', {
+          type: 'button', role: 'menuitem', className: 'mm-canvas-bar-item', disabled: !activeId,
           onClick: () => {
             setBarMoreOpen(false);
             void openVersionHistory();
@@ -5920,6 +6188,53 @@ window.__ModuleLoader__.load({
       })();
 
       /** The bar that edits the selected connector. */
+      /** What the last Figma import brought in, and what it left behind. */
+      const importReportView = importReportOpen
+        ? h('div', {
+          className: 'mm-canvas-report',
+          role: 'dialog',
+          'aria-label': 'Last import report',
+          'aria-modal': 'false',
+        },
+        h('div', { className: 'mm-canvas-report-head' },
+          h('span', { className: 'mm-canvas-report-title' }, 'Last import report'),
+          h('button', {
+            type: 'button', className: 'mm-canvas-report-close',
+            'aria-label': 'Close the import report',
+            onClick: () => setImportReportOpen(false),
+          }, h(Icon, { name: 'close', size: 14 }))),
+        importReport
+          ? h('div', { className: 'mm-canvas-report-body' },
+            h('p', { className: 'mm-canvas-report-source' },
+              `${importReport.source || 'Figma file'} · ${new Date(importReport.at).toLocaleString()} · ${importReport.nodeCount} nodes in the file`),
+            h('div', { className: 'mm-canvas-report-section' },
+              h('span', { className: 'mm-canvas-report-label' }, 'Imported'),
+              h('p', { className: 'mm-canvas-report-text' },
+                Object.entries(importReport.imported || {}).filter(([, value]) => value > 0)
+                  .map(([kind, value]) => `${value} ${kind}`).join(', ') || 'nothing')),
+            Object.keys(importReport.skipped || {}).length
+              ? h('div', { className: 'mm-canvas-report-section' },
+                h('span', { className: 'mm-canvas-report-label' }, 'Not imported'),
+                h('ul', { className: 'mm-canvas-report-list' },
+                  Object.entries(importReport.skipped || {}).filter(([, value]) => value > 0).map(([kind, value]) => {
+                    const samples = (importReport.skippedSamples || {})[kind] || [];
+                    return h('li', { key: kind, className: 'mm-canvas-report-item' },
+                      h('span', { className: 'mm-canvas-report-count' }, `${value} ${kind}`),
+                      samples.length
+                        ? h('span', { className: 'mm-canvas-report-samples' }, samples.map((sample) => sample.name || sample.type).filter(Boolean).slice(0, 6).join(' · '))
+                        : null);
+                  })))
+              : null,
+            Array.isArray(importReport.warnings) && importReport.warnings.length
+              ? h('div', { className: 'mm-canvas-report-section' },
+                h('span', { className: 'mm-canvas-report-label' }, 'Notes'),
+                h('ul', { className: 'mm-canvas-report-list' },
+                  importReport.warnings.map((warning, index) => h('li', { key: `w-${index}`, className: 'mm-canvas-report-text' }, warning))))
+              : null,
+            h('p', { className: 'mm-canvas-report-hint' }, 'The same report is readable by an agent through design_inspect with view "import".'))
+          : h('p', { className: 'mm-canvas-report-text' }, 'This board was not imported from a Figma file.'))
+        : null;
+
       const canvasEdgePanel = (() => {
         const edge = (doc?.edges || []).find((item) => item.id === selectedEdgeId);
         if (!edge) return null;
@@ -6215,6 +6530,7 @@ window.__ModuleLoader__.load({
             backgroundPosition: `${camera.x}px ${camera.y}px`,
           },
         },
+          importReportView,
           selectedEdgeId ? canvasEdgePanel : null,
           canvasConnectPreviewView,
           magnet ? canvasMagnetView : null,
@@ -8159,6 +8475,23 @@ window.__ModuleLoader__.load({
       .mm-canvas-dock{position:absolute;left:16px;bottom:16px;z-index:9;display:flex;align-items:center;gap:8px;width:min(440px,calc(100% - 32px));padding:6px;border:1px solid var(--mm-line-strong);border-radius:var(--dsw-radius-lg);background:var(--mm-overlay);box-shadow:var(--mm-shadow-float);color:var(--dsw-alias-label-secondary)}
       .mm-canvas-dock.is-lifted{bottom:76px}
       .mm-canvas-ai-launcher{position:absolute;left:16px;bottom:16px;z-index:9;display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 12px;border:1px solid var(--mm-line-strong);border-radius:999px;background:var(--mm-overlay);box-shadow:var(--mm-shadow-float);color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;cursor:pointer;transition:color 100ms ease,border-color 100ms ease}
+      /* The import report is evidence about a board, so it reads like a record:
+         sections, counts, and the names of what did not come through. */
+      .mm-canvas-report{position:absolute;right:16px;bottom:64px;z-index:10;width:min(360px,calc(100% - 32px));max-height:min(420px,calc(100% - 96px));display:flex;flex-direction:column;border:1px solid var(--mm-line-strong);border-radius:var(--dsw-radius-lg);background:var(--mm-overlay);box-shadow:var(--mm-shadow-float);color:var(--dsw-alias-label-primary);overflow:hidden}
+      .mm-canvas-report-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid var(--mm-line)}
+      .mm-canvas-report-title{font-size:12px;font-weight:600;letter-spacing:0.01em}
+      .mm-canvas-report-close{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+      .mm-canvas-report-close:hover{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
+      .mm-canvas-report-body{display:flex;flex-direction:column;gap:10px;padding:12px;overflow:auto}
+      .mm-canvas-report-source{margin:0;font-size:11px;color:var(--dsw-alias-label-secondary);word-break:break-word}
+      .mm-canvas-report-section{display:flex;flex-direction:column;gap:4px}
+      .mm-canvas-report-label{font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--dsw-alias-label-secondary)}
+      .mm-canvas-report-text{margin:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary)}
+      .mm-canvas-report-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+      .mm-canvas-report-item{display:flex;flex-direction:column;gap:2px}
+      .mm-canvas-report-count{font-size:12px;font-weight:600}
+      .mm-canvas-report-samples{font-size:11px;line-height:1.45;color:var(--dsw-alias-label-secondary);word-break:break-word}
+      .mm-canvas-report-hint{margin:0;font-size:11px;line-height:1.45;color:var(--dsw-alias-label-secondary)}
       .mm-canvas-ai-launcher:hover{color:var(--dsw-alias-label-primary);border-color:var(--mm-accent-base)}
       .mm-canvas-ai-launcher:focus-visible{outline:2px solid var(--mm-accent-base);outline-offset:2px}
       .mm-canvas-ai-close{width:30px;height:30px;flex:none;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
@@ -8443,10 +8776,98 @@ window.__ModuleLoader__.load({
           : h('p', { className: 'mm-design-card-hint' }, '打开左侧 Moments 面板查看这块板'));
     }
 
+    /**
+     * Answer snapshot requests from the Host, with or without the Design panel.
+     *
+     * An agent asks for a picture while the person is chatting, so the
+     * responder must not depend on the canvas being on screen: it reads the
+     * saved board, draws it with the same renderer the export uses, and sends
+     * the PNG back. It parks one long poll, so an idle page costs nothing.
+     */
+    /**
+     * Answer snapshot requests from the Host, with or without the Design panel.
+     *
+     * An agent asks for a picture while the person is chatting, so this must not
+     * depend on the canvas being on screen: it reads the saved board, draws it
+     * with the same renderer the export uses, and sends the PNG back. It parks
+     * one long poll, so an idle page costs nothing.
+     */
+    function startSnapshotResponder() {
+      let stopped = false;
+      const idle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const tokens = () => {
+        // The palette lives on the plugin's own surfaces. On the chat page the
+        // Design canvas is not mounted, but the sidebar icon is, and it carries
+        // the same token block; with neither, the defaults below apply.
+        const host = document.querySelector('.mm-app, .mm-float, .mm-panel-icon');
+        const read = (name, fallback) => {
+          const value = host ? getComputedStyle(host).getPropertyValue(name).trim() : '';
+          return value || fallback;
+        };
+        return {
+          background: read('--mm-export-background', 'rgb(251 250 248)'),
+          ink: read('--mm-export-ink', 'rgb(43 41 38)'),
+          line: read('--mm-export-line', 'rgb(141 139 134)'),
+          sticky: read('--mm-note-fill', 'rgb(255 243 191)'),
+        };
+      };
+      const answer = async (job) => {
+        const loaded = await api('canvas-load', { id: job.boardId });
+        const board = loaded?.canvas;
+        const nodes = Array.isArray(board?.nodes) ? board.nodes : [];
+        if (!nodes.length) {
+          await api('snapshot-put', { jobId: job.jobId, dataUrl: '' }).catch(() => {});
+          return;
+        }
+        const svg = await canvasSceneSvg(nodes, board.edges || [], {
+          region: job.region || undefined,
+          padding: 0,
+          ...tokens(),
+        });
+        if (!svg) return;
+        // A 46000px board must not become a 92000px PNG; the agent can ask for a
+        // region when it needs detail.
+        const size = /width="(\d+)" height="(\d+)"/.exec(svg);
+        const width = size ? Number(size[1]) : 0;
+        const cap = 2048;
+        const wanted = Number(job.scale) > 0 ? Number(job.scale) : 2;
+        const scale = width > 0 ? Math.min(wanted, cap / width) : wanted;
+        const blob = await canvasExportPng(svg, Math.max(0.25, scale));
+        const dataUrl = await canvasBlobDataUrl(blob);
+        await api('snapshot-put', { jobId: job.jobId, dataUrl });
+      };
+      const pump = async () => {
+        let failures = 0;
+        while (!stopped) {
+          try {
+            const waiting = await api('snapshot-wait', { holdMs: 20000 });
+            failures = 0;
+            if (stopped) return;
+            const job = waiting?.job;
+            if (!job) {
+              // A long poll that returns at once is not holding; yield first.
+              await idle(250);
+              continue;
+            }
+            await answer(job);
+          } catch {
+            if (stopped) return;
+            failures += 1;
+            await idle(Math.min(30000, failures >= 3 ? 2000 * failures : 800));
+          }
+        }
+      };
+      void pump();
+      return () => { stopped = true; };
+    }
+
     return {
       inject: ['slots'],
       apply(ctx) {
         ctx.effect(() => installStyles(), 'moments-notes: stylesheets');
+        // The canvas answers an agent's picture request whether or not the
+        // person is looking at it, so the responder lives with the plugin.
+        ctx.effect(() => startSnapshotResponder(), 'moments-notes: canvas snapshots');
         ctx.effect(() => ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist',
           id: 'moments-notes',
