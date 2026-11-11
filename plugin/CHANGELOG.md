@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.6.0 — 2026-11-11
+
+Resizing a node follows the pointer and stays where it was dropped. Three
+separate causes were stacked on top of each other, which is why earlier fixes
+kept looking like they had not worked:
+
+- The box of every frame and component was re-measured from its members on each
+  update, so a resize snapped back the moment anything else changed. Containers
+  now carry `autoSize`: frames and components keep the size they were given,
+  groups keep following their members (and resizing a group scales them).
+- A resize wrote the document without asking for a save, so a correct box
+  reverted on the next load — the picture on screen and the file disagreed.
+- The drag is measured in screen pixels and divided by the camera zoom, so the
+  corner lands under the pointer at 55% as well as at 100%.
+
+Each of the three now has a regression test, and the whole path was dragged in
+the real app at 55% zoom: 600×400 → 782×509 board units for a 100×60 pixel drag,
+with the same numbers in the saved document.
+
 ## 3.5.2 — 2026-11-11
 
 - The inspector collapses from its own header, not only from the toolbar: a

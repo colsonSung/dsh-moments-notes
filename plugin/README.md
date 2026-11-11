@@ -117,6 +117,7 @@ Design 不只是给人画的画布：Agent 通过四个工具写**同一份**场
 - **导入报告会留存**：`.fig/.jam/.deck` 导入后，节点数、各类导入量、被跳过的组件/切片/未知节点（带前 20 个样本名）、缩略图警告都写进 `import-reports.json`；Design 顶栏 `⋯ → Last import report` 随时能翻，Agent 也能用 `view: "import"` 读同一份。
 - **附带一个设计 skill**：`skills/moments-design/` 随插件安装并注册为 bundled skill，讲的是「怎么画得能改」——栈式布局优先于绝对坐标、令牌优先于硬编码、组件优先于复制、写完必须过 `issues` 与看图两步；工具描述说"能写什么"，skill 说"什么值得写"。
 - `design_export({ boardId, format: 'html'|'svg'|'spec', path? })`：导出可交付产物——独立 HTML+CSS 页面、SVG、设计规格 JSON（色板/字号表/圆角/投影/流动容器）；示例见 `docs/examples/`。SVG 与 PNG 走与画布同一套渲染语义：真实字号/字重/行高、自动换行、导入的图片内嵌为 data URL、投影/渐变/矢量路径都画出来（以前文字固定 13px、图片直接缺席）。
+- **容器尺寸归属**：frame 与 component 保留被拖出来的尺寸（`autoSize: false`），缩放只按约束重新落位成员；group 的盒子由成员决定（`autoSize: true`），缩放 group 会连同成员一起缩放。拖动缩放手柄时，边角始终跟在指针下。
 - **自动布局**：frame/group 声明 `layout: row|column` + `gap` + `padding` + `align: start|center|end|stretch`，成员坐标在保存时由 Host 算好写回；容器里的成员在画布上只能选中、不能拖动（否则下一次自动保存会被布局重排覆盖）。
 
 写路径是 Host 的 `lib/canvas-repository.js`，合法性仍由 `lib/canvas-domain.js` 独家判定；

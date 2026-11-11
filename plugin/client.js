@@ -2268,6 +2268,12 @@ window.__ModuleLoader__.load({
      * The rectangle is a derived value: the members are the truth, so the
      * frame follows them whenever they move.
      */
+    /** Whether a container's box is derived from its members (a group's is). */
+    function canvasContainerAutoSizes(node) {
+      if (typeof node.autoSize === 'boolean') return node.autoSize;
+      return node.type === 'group';
+    }
+
     function canvasIsContainer(node) {
       return node.type === 'group' || node.type === 'frame' || node.type === 'component';
     }
@@ -2296,6 +2302,9 @@ window.__ModuleLoader__.load({
       for (const group of ordered) {
         const index = next.findIndex((node) => node.id === group.id);
         if (index < 0) continue;
+        // Explicitly sized containers keep the box the person gave them; only
+        // derived ones (a group, by default) are re-measured from members.
+        if (!canvasContainerAutoSizes(next[index])) continue;
         const byId = new Map(next.map((node) => [node.id, node]));
         const members = (next[index].members || []).map((id) => byId.get(id)).filter(Boolean);
         if (!members.length) continue;
@@ -3472,16 +3481,34 @@ window.__ModuleLoader__.load({
       }, [selectNodes]);
 
       const startResize = useCallback((event, handle) => {
-        const ids = [...selected];
-        const bounds = canvasBoundsOf((docRef.current?.nodes || []).filter((item) => ids.includes(item.id)));
+        const nodes = docRef.current?.nodes || [];
+        const byId = new Map(nodes.map((node) => [node.id, node]));
+        const ids = new Set(selected);
+        // A group is defined by its members, so dragging its handle has to
+        // scale the members: scaling only the group's own box would be undone
+        // by the next measurement, which is what made the box drift.
+        const scaleMembers = (nodeId) => {
+          const node = byId.get(nodeId);
+          if (!node || !canvasIsContainer(node) || !canvasContainerAutoSizes(node)) return;
+          for (const memberId of node.members || []) {
+            if (ids.has(memberId)) continue;
+            ids.add(memberId);
+            scaleMembers(memberId);
+          }
+        };
+        for (const id of [...ids]) scaleMembers(id);
+        const bounds = canvasBoundsOf(nodes.filter((item) => ids.has(item.id)));
         if (!bounds) return;
         gestureRef.current = {
           mode: 'resize',
           handle,
           originClient: { x: event.clientX || 0, y: event.clientY || 0 },
           bounds,
-          snapshot: (docRef.current?.nodes || []).filter((item) => ids.includes(item.id)).map((item) => ({ ...item })),
-          before: docRef.current?.nodes || [],
+          snapshot: nodes.filter((item) => ids.has(item.id)).map((item) => ({ ...item })),
+          // Which nodes the person actually grabbed: only those get their box
+          // pinned, the rest are being carried along by the scale.
+          selectedIds: [...selected],
+          before: nodes,
           moved: false,
         };
       }, [selected]);
@@ -3860,21 +3887,28 @@ window.__ModuleLoader__.load({
           // events, and multiplying the current size again on every one of them
           // grows the node exponentially.
           const origins = new Map(gesture.snapshot.map((item) => [item.id, item]));
+          const grabbed = new Set(gesture.selectedIds || gesture.snapshot.map((item) => item.id));
           let nodes = (docRef.current?.nodes || []).map((item) => {
             const origin = origins.get(item.id);
             if (!origin) return item;
-            return {
+            const scaled = {
               ...item,
               x: Math.round(left + (origin.x - bounds.x) * scaleX),
               y: Math.round(top + (origin.y - bounds.y) * scaleY),
               w: Math.max(CANVAS_NODE_MIN_SIZE, Math.round(origin.w * scaleX)),
               h: Math.max(CANVAS_NODE_MIN_SIZE, Math.round(origin.h * scaleY)),
             };
+            // The box of a container the person grabbed is now their decision:
+            // it stops following its members, or the next measurement would
+            // snap it back and the drag would appear to drift.
+            if (grabbed.has(item.id) && canvasIsContainer(item)) scaled.autoSize = false;
+            return scaled;
           });
-          // A single resized container re-places its members by their pins
+          // An explicitly sized container re-places its members by their pins
           // instead of stretching them with the box.
-          if (gesture.snapshot.length === 1 && canvasIsContainer(gesture.snapshot[0])) {
-            nodes = canvasApplyConstraints(nodes, gesture.snapshot[0].id, bounds, {
+          const sole = gesture.snapshot.length === 1 ? gesture.snapshot[0] : null;
+          if (sole && canvasIsContainer(sole)) {
+            nodes = canvasApplyConstraints(nodes, sole.id, bounds, {
               x: left, y: top, w: width, h: height,
             });
           }
@@ -3883,6 +3917,10 @@ window.__ModuleLoader__.load({
           const next = { ...current, nodes };
           docRef.current = next;
           setDoc(next);
+          // A resize writes the document directly, so it has to ask for its own
+          // save: without this the box followed the pointer on screen and then
+          // reverted on the next load, which looks exactly like drift.
+          scheduleSaveRef.current?.();
           return;
         }
         if (gesture.mode === 'anchor') {
@@ -3992,6 +4030,9 @@ window.__ModuleLoader__.load({
           return;
         }
         if (gesture.mode === 'move' || gesture.mode === 'resize') {
+          // The last frame of the drag is the one worth storing; a burst of
+          // pointer moves arms the timer many times and only the last one runs.
+          if (gesture.moved) scheduleSaveRef.current?.();
           if (gesture.moved) {
             // The snapshot only holds the nodes that moved, which is what a
             // drag needs. The undo stack needs the whole board: restoring a

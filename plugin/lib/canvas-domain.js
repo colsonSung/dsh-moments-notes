@@ -881,6 +881,11 @@ function normalizeNode(input) {
     blur: nodeBlur(input.blur),
     blend: nodeBlend(input.blend),
     gradient: nodeGradient(input.gradient),
+    // Whether the box follows the members. A group is defined by what it
+    // holds, so its box is derived. A frame or a component is a surface of its
+    // own size: resizing it must stick, or every resize would snap back to the
+    // members the moment the document is normalised.
+    autoSize: isContainer ? nodeBoolean(input.autoSize, input.type === 'group', 'node autoSize') : false,
     layout: isContainer ? nodeLayout(input.layout) : 'none',
     grid: isContainer ? nodeGrid(input.grid) : null,
     gap: isContainer ? nodeGap(input.gap) : 0,

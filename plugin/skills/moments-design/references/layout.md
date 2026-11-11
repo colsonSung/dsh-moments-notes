@@ -68,6 +68,16 @@ reports it as `text-overflow`.
 - Prefer two nodes (title + body) over one node with a paragraph break when the
   two parts have different weights or colours.
 
+## Who owns a container's size
+
+- A **frame** or a **component** keeps the size it is given: resizing it sticks,
+  children stay where their constraints put them, and a child moved outside no
+  longer drags the frame smaller.
+- A **group** is defined by its members (`autoSize: true`): its box is measured
+  from them, so resizing a group scales the members with it.
+- `design_nodes` can set `autoSize` explicitly when a group should behave like a
+  fixed frame.
+
 ## Naming
 
 Name what the thing is for, not what it looks like: `Sidebar`, `Row · invoices`,

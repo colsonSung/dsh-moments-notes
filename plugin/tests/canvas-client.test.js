@@ -5256,3 +5256,143 @@ test('the title bar keeps one Files menu instead of three separate buttons', asy
 })
 
 
+
+/* ---------------------------------------------------- resizing tracks the pointer */
+
+function resizeDocument(nodes, camera = { x: 0, y: 0, zoom: 1 }) {
+  return { ...V2_DOCUMENT, camera, nodes };
+}
+
+async function dragResize(plugin, handle, from, to) {
+  await pressAt(plugin, handle, from);
+  const surface = findByClass(plugin.renderer.root, 'mm-canvas-surface');
+  surface.props.onPointerMove(makeEvent({ clientX: to.x, clientY: to.y, buttons: 1 }));
+  await settle(plugin, 2);
+  surface.props.onPointerUp(makeEvent({ clientX: to.x, clientY: to.y, buttons: 0 }));
+  await settle(plugin, 2);
+}
+
+function containerById(plugin, id) {
+  return findAll(plugin.renderer.root, (element) => element.props?.['data-container-id'] === id)[0];
+}
+
+function cornerHandle(plugin) {
+  return findAll(plugin.renderer.root, (element) => (
+    String(element.props?.className || '').includes('mm-canvas-handle is-se')
+  ))[0];
+}
+
+test('a resize follows the pointer at a zoom other than 100%', async () => {
+  // 50 screen pixels at 50% zoom is 100 board units: a handler that forgets the
+  // camera grows the node by 50, one that applies it twice grows it by 200.
+  const nodes = [{
+    ...V2_DOCUMENT.nodes[0], id: 'card', type: 'shape', shape: 'rect',
+    x: 100, y: 100, w: 200, h: 100, fill: '#ffffff', members: [],
+  }];
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: resizeDocument(nodes, { x: 0, y: 0, zoom: 0.5 }) } }) });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    await pressElement(plugin, nodeById(plugin, 'card'));
+    const handle = cornerHandle(plugin);
+    assert.ok(handle, 'the selection shows its handles');
+    await dragResize(plugin, handle, { x: 100, y: 100 }, { x: 150, y: 130 });
+
+    const node = nodeById(plugin, 'card');
+    assert.equal(parseFloat(node.props.style.width), 300, 'width follows 100 board units');
+    assert.equal(parseFloat(node.props.style.height), 160, 'height follows 60 board units');
+    assert.equal(parseFloat(node.props.style.left), 100, 'the anchored edge does not move');
+  } finally {
+    plugin.restore();
+  }
+});
+
+test('a frame keeps the size it was dragged to instead of snapping back to its members', async () => {
+  // The reported bug: resizing a frame looked like it drifted, because the box
+  // was re-measured from its members on the very next update.
+  const nodes = [
+    { ...V2_DOCUMENT.nodes[0], id: 'panel', type: 'frame', x: 100, y: 100, w: 400, h: 300, fill: '#ffffff', members: ['kid-a', 'kid-b'] },
+    { ...V2_DOCUMENT.nodes[0], id: 'kid-a', type: 'shape', shape: 'rect', x: 120, y: 120, w: 100, h: 60, fill: '#ffffff', members: [] },
+    { ...V2_DOCUMENT.nodes[0], id: 'kid-b', type: 'shape', shape: 'rect', x: 240, y: 120, w: 100, h: 60, fill: '#ffffff', members: [] },
+  ];
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: resizeDocument(nodes) } }) });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    await pressElement(plugin, containerById(plugin, 'panel'));
+    const handle = cornerHandle(plugin);
+    assert.ok(handle, 'the frame shows its handles');
+    await dragResize(plugin, handle, { x: 100, y: 100 }, { x: 180, y: 140 });
+
+    const panel = containerById(plugin, 'panel');
+    assert.equal(parseFloat(panel.props.style.width), 480, 'the frame keeps the dragged width');
+    assert.equal(parseFloat(panel.props.style.height), 340, 'the frame keeps the dragged height');
+    const kid = nodeById(plugin, 'kid-a');
+    assert.equal(parseFloat(kid.props.style.width), 100, 'children keep their size');
+    assert.equal(parseFloat(kid.props.style.left), 120, 'children keep their place');
+  } finally {
+    plugin.restore()
+  }
+});
+
+test('a resize is saved, so reopening the board shows the size that was dragged', async () => {
+  // The bug behind "it drifts": the box followed the pointer, then reverted on
+  // the next load because the resize never asked for a save.
+  const nodes = [{
+    ...V2_DOCUMENT.nodes[0], id: 'card', type: 'shape', shape: 'rect',
+    x: 100, y: 100, w: 200, h: 100, fill: '#ffffff', members: [],
+  }];
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: resizeDocument(nodes) } }) });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    await pressElement(plugin, nodeById(plugin, 'card'));
+    const handle = cornerHandle(plugin);
+    await dragResize(plugin, handle, { x: 100, y: 100 }, { x: 160, y: 140 });
+    // The save is debounced; the assertion is about what it carries, not speed.
+    await sleep(900);
+
+    const saves = plugin.fetch.calls.filter((call) => call.method === 'canvas-save');
+    assert.ok(saves.length > 0, 'a resize asks for a save');
+    const saved = saves.at(-1).payload.nodes.find((node) => node.id === 'card');
+    assert.equal(saved.w, 260, 'the saved width is the dragged width');
+    assert.equal(saved.h, 140, 'the saved height is the dragged height');
+  } finally {
+    plugin.restore();
+  }
+});
+
+test('resizing a group scales what is inside it', async () => {
+  // A group is defined by its members, so its handle has to scale them: a group
+  // whose box grew while its members stayed put would be re-measured back.
+  const nodes = [
+    { ...V2_DOCUMENT.nodes[0], id: 'cluster', type: 'group', x: 96, y: 96, w: 208, h: 88, fill: null, members: ['one', 'two'] },
+    { ...V2_DOCUMENT.nodes[0], id: 'one', type: 'shape', shape: 'rect', x: 100, y: 100, w: 100, h: 80, fill: '#ffffff', members: [] },
+    { ...V2_DOCUMENT.nodes[0], id: 'two', type: 'shape', shape: 'rect', x: 200, y: 100, w: 100, h: 80, fill: '#ffffff', members: [] },
+  ];
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: resizeDocument(nodes) } }) });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    // A group is an outline: it is grabbed by its edge, the way a person selects
+    // one on the canvas.
+    const edge = findAll(plugin.renderer.root, (element) => String(element.props?.className || '').includes('mm-canvas-group-edge'))[0];
+    assert.ok(edge, 'the group draws an edge to grab');
+    await pressAt(plugin, edge, { x: 100, y: 100 });
+    await settle(plugin, 2);
+    const handles = findAll(plugin.renderer.root, (element) => String(element.props?.className || '').includes('mm-canvas-handle'));
+    assert.ok(handles.length > 0, `the group shows its handles; saw: ${handles.map((el) => `${el.props?.className}:${Object.keys(el.props || {}).join(',')}`).join('|')}`);
+    const handle = handles.find((el) => String(el.props.className).includes('is-se'));
+    assert.ok(handle, `a south-east handle exists; saw: ${handles.map((el) => el.props.className).join('|')}`);
+    await dragResize(plugin, handle, { x: 100, y: 100 }, { x: 150, y: 100 });
+
+    const cluster = containerById(plugin, 'cluster');
+    const one = nodeById(plugin, 'one');
+    const two = nodeById(plugin, 'two');
+    assert.ok(parseFloat(cluster.props.style.width) > 208, 'the group grew with its members');
+    assert.ok(parseFloat(one.props.style.width) > 100, 'the first member scaled');
+    assert.ok(parseFloat(two.props.style.left) > 200, 'the second member moved with the scale');
+  } finally {
+    plugin.restore();
+  }
+});
