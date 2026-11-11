@@ -54,6 +54,8 @@ export const CANVAS_LIMITS = Object.freeze({
 const NODE_TYPES = Object.freeze(['note', 'sticky', 'text', 'shape', 'image', 'group', 'frame', 'component', 'instance']);
 const ASSET_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONTAINER_TYPES = Object.freeze(['group', 'frame', 'component']);
+/** The gap a container keeps between its edge and the members inside it. */
+const CANVAS_GROUP_PADDING = 12;
 /** Nodes an instance expansion produces carry this marker and are rebuilt on every save. */
 const INSTANCE_LIMIT = 64;
 const NODE_SHAPES = Object.freeze(['rect', 'ellipse', 'line', 'arrow', 'polygon', 'star', 'path']);
@@ -1076,6 +1078,70 @@ function normalizeEdge(input, nodeIds) {
  * computes the same coordinates — and it moves a member that is itself a
  * container together with everything inside it, so nesting stays coherent.
  */
+/**
+ * Bring back members that a container no longer holds.
+ *
+ * A resize that re-placed members by their pins, and an import that flattened
+ * nested frames into siblings, can leave a container's members thousands of
+ * units away from the container itself. The container's own box is the one
+ * place the person still recognises, so the members move back into it and
+ * keep the arrangement they had with each other.
+ *
+ * Only a member set that lies entirely outside is repaired: a member that
+ * pokes out of the edge by a little is an ordinary loose child.
+ */
+export function repairEscapedMembers(nodes) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  for (const container of nodes) {
+    if (!CONTAINER_TYPES.includes(container.type)) continue;
+    const members = (container.members || []).map((id) => byId.get(id)).filter(Boolean);
+    if (members.length === 0) continue;
+    const union = boundsOf(members);
+    if (!union) continue;
+    const box = { x: container.x, y: container.y, w: container.w, h: container.h };
+    // Overlapping boxes mean the members are merely loose, not lost.
+    const overlaps = union.x < box.x + box.w && union.x + union.w > box.x
+      && union.y < box.y + box.h && union.y + union.h > box.y;
+    if (overlaps) continue;
+    const dx = Math.round(box.x + CANVAS_GROUP_PADDING - union.x);
+    const dy = Math.round(box.y + CANVAS_GROUP_PADDING - union.y);
+    translateTree(byId, members, dx, dy);
+  }
+  return nodes;
+}
+
+/** The box that holds every given node. */
+function boundsOf(nodes) {
+  if (!nodes.length) return null;
+  let x = Infinity;
+  let y = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const node of nodes) {
+    if (!node) continue;
+    x = Math.min(x, node.x);
+    y = Math.min(y, node.y);
+    right = Math.max(right, node.x + node.w);
+    bottom = Math.max(bottom, node.y + node.h);
+  }
+  if (!Number.isFinite(x)) return null;
+  return { x, y, w: right - x, h: bottom - y };
+}
+
+/** Move a node and everything it holds by the same amount. */
+function translateTree(byId, nodes, dx, dy) {
+  if (!dx && !dy) return;
+  for (const node of nodes) {
+    node.x += dx;
+    node.y += dy;
+    if (!CONTAINER_TYPES.includes(node.type)) continue;
+    for (const memberId of node.members || []) {
+      const member = byId.get(memberId);
+      if (member) translateTree(byId, [member], dx, dy);
+    }
+  }
+}
+
 export function applyAutoLayout(nodes) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const translate = (node, dx, dy) => {
@@ -1304,6 +1370,9 @@ export function normalizeCanvasDocument(input, options = {}) {
   // The member rules need every node, so they run between the node pass
   // and the edge pass.
   validateMembers(nodes);
+  // A container that has lost its members gets them back before anything
+  // else measures or lays out: every later step reads these coordinates.
+  repairEscapedMembers(nodes);
   // Flow layout runs before edges so a connector anchors to the final box.
   applyAutoLayout(nodes);
   // Tokens resolve last: a node keeps its reference and gains the literal

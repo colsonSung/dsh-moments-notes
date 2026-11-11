@@ -5338,6 +5338,40 @@ test('a frame keeps the size it was dragged to instead of snapping back to its m
   }
 });
 
+test('resizing a frame whose members escaped carries them along instead of throwing them away', async () => {
+  // The reported bug: the frame's members sat 60,000 units away from it, so
+  // re-placing them by their pins threw them thousands of units further. The
+  // box followed the pointer while its contents ran off, which reads as
+  // "it jumped to the right".
+  const nodes = [
+    { ...V2_DOCUMENT.nodes[0], id: 'panel', type: 'frame', x: 100, y: 100, w: 400, h: 300, fill: '#ffffff', members: ['kid-a', 'kid-b'] },
+    { ...V2_DOCUMENT.nodes[0], id: 'kid-a', type: 'shape', shape: 'rect', x: -37228, y: -36956, w: 176, h: 80, fill: '#ffffff', members: [], constraints: { horizontal: 'right', vertical: 'top' } },
+    { ...V2_DOCUMENT.nodes[0], id: 'kid-b', type: 'shape', shape: 'rect', x: -36956, y: -36956, w: 176, h: 80, fill: '#ffffff', members: [], constraints: { horizontal: 'right', vertical: 'top' } },
+  ];
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: resizeDocument(nodes) } }) });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    await pressElement(plugin, containerById(plugin, 'panel'));
+    const handle = cornerHandle(plugin);
+    assert.ok(handle, 'the frame shows its handles');
+    await dragResize(plugin, handle, { x: 100, y: 100 }, { x: 180, y: 140 });
+
+    const panel = containerById(plugin, 'panel');
+    assert.equal(parseFloat(panel.props.style.width), 480, 'the frame keeps the dragged width');
+    assert.equal(parseFloat(panel.props.style.height), 340, 'the frame keeps the dragged height');
+    const kid = nodeById(plugin, 'kid-a');
+    // The members keep their place: the box follows the pointer and its
+    // contents follow the box. Re-placing them by their pins instead would
+    // throw them tens of thousands of units further away, because the pins
+    // describe a relationship the escaped members no longer have.
+    assert.equal(parseFloat(kid.props.style.left), -37228, 'the members are not thrown away');
+    assert.equal(parseFloat(kid.props.style.width), 176, 'the members keep their size');
+  } finally {
+    plugin.restore();
+  }
+});
+
 test('a small selection keeps its four handles from owning the same pixels', async () => {
   // At 37% zoom a 66x30 box is 25x11 on screen. With a fixed 9px halo all four
   // handles overlapped, and the last one in the DOM won: dragging the left

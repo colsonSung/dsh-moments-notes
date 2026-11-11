@@ -1,7 +1,7 @@
 // Shown in the board menu. The contract test keeps it equal to package.json,
 // because "which build am I looking at?" is the first question when a fix does
 // not seem to have landed.
-const PLUGIN_VERSION = '3.6.1';
+const PLUGIN_VERSION = '3.7.0';
 
 window.__ModuleLoader__.load({
   id: 'dsh-moments-notes',
@@ -1998,6 +1998,26 @@ window.__ModuleLoader__.load({
       return nodes;
     }
 
+    /** Move a container's members, and what they hold, by the same amount. */
+    function canvasMoveMembers(nodes, containerId, dx, dy) {
+      if (!dx && !dy) return nodes;
+      const byId = new Map(nodes.map((node) => [node.id, node]));
+      const moved = new Set();
+      const move = (nodeId) => {
+        if (moved.has(nodeId)) return;
+        const node = byId.get(nodeId);
+        if (!node) return;
+        moved.add(nodeId);
+        node.x = Math.round(node.x + dx);
+        node.y = Math.round(node.y + dy);
+        for (const memberId of node.members || []) move(memberId);
+      };
+      const container = byId.get(containerId);
+      if (!container) return nodes;
+      for (const memberId of container.members || []) move(memberId);
+      return nodes;
+    }
+
     function canvasBoundsOf(nodes) {
       if (!nodes.length) return null;
       let left = Infinity;
@@ -2287,6 +2307,10 @@ window.__ModuleLoader__.load({
       const groups = nodes.filter((node) => canvasIsContainer(node));
       if (!groups.length) return nodes;
       const next = [...nodes];
+      // A container whose members are not inside it was flattened by an
+      // import: its own box and its children's boxes describe different places.
+      // Re-measuring it from those children would teleport the frame, so a
+      // container that no longer holds its members keeps the box it has.
 
       /** How deep a container sits: a container inside three others is depth 3. */
       const depthOf = (node) => {
@@ -2315,6 +2339,12 @@ window.__ModuleLoader__.load({
         if (!members.length) continue;
         const bounds = canvasBoundsOf(members);
         if (!bounds) continue;
+        // The members have to be inside the container for a measurement of them
+        // to describe the container. When they are not, the container's own box
+        // is the only geometry that means anything.
+        const own = canvasBoundsOf([next[index]]);
+        if (own && (bounds.x < own.x - 1 || bounds.y < own.y - 1
+          || bounds.x + bounds.w > own.x + own.w + 1 || bounds.y + bounds.h > own.y + own.h + 1)) continue;
         next[index] = {
           ...next[index],
           x: Math.round(bounds.x - CANVAS_GROUP_PADDING),
@@ -3913,9 +3943,31 @@ window.__ModuleLoader__.load({
           // instead of stretching them with the box.
           const sole = gesture.snapshot.length === 1 ? gesture.snapshot[0] : null;
           if (sole && canvasIsContainer(sole)) {
-            nodes = canvasApplyConstraints(nodes, sole.id, bounds, {
-              x: left, y: top, w: width, h: height,
-            });
+            // Pins only describe a relationship when the members are inside
+            // the container. A flattened import leaves them outside, and
+            // re-placing them by their pins then throws them thousands of
+            // units away: the box follows the pointer while its contents
+            // teleport, which reads as "it ran off to the right".
+            const own = canvasBoundsOf([sole]);
+            const inside = own && sole.members && sole.members.length
+              ? (() => {
+                const byId = new Map(nodes.map((node) => [node.id, node]));
+                const kids = sole.members.map((id) => byId.get(id)).filter(Boolean);
+                if (!kids.length) return false;
+                const union = canvasBoundsOf(kids);
+                return !union || (union.x >= own.x - 1 && union.y >= own.y - 1
+                  && union.x + union.w <= own.x + own.w + 1
+                  && union.y + union.h <= own.y + own.h + 1);
+              })()
+              : false;
+            if (inside) {
+              nodes = canvasApplyConstraints(nodes, sole.id, bounds, {
+                x: left, y: top, w: width, h: height,
+              });
+            } else {
+              // The members keep their place relative to the container.
+              nodes = canvasMoveMembers(nodes, sole.id, left - bounds.x, top - bounds.y);
+            }
           }
           nodes = canvasSyncGroups(nodes);
           const current = docRef.current;
@@ -6276,7 +6328,7 @@ window.__ModuleLoader__.load({
           },
         }, h(Icon, { name: 'refresh', size: 14 }), 'Version history'),
         h('div', { className: 'mm-canvas-bar-rule', role: 'separator' }),
-        h('span', { className: 'mm-canvas-bar-version' }, `Moments ${PLUGIN_VERSION}`));
+        h('span', { className: 'mm-canvas-bar-menu-version' }, `Moments ${PLUGIN_VERSION}`));
 
       /** The handle a connector is about to snap to. */
       const canvasMagnetView = (() => {
@@ -6606,6 +6658,12 @@ window.__ModuleLoader__.load({
             title: statusLabel,
             'aria-label': statusLabel,
           }, h('span', { className: 'mm-canvas-status-dot' })),
+          // The build is on the bar, not in a menu: a screenshot then answers
+          // "is the fix I made actually running?".
+          h('span', {
+            className: 'mm-canvas-bar-version',
+            title: `Moments ${PLUGIN_VERSION}`,
+          }, PLUGIN_VERSION),
           h('button', {
             type: 'button',
             className: cx('mm-canvas-bar-more', barMoreOpen && 'is-open'),
@@ -8747,7 +8805,8 @@ window.__ModuleLoader__.load({
       .mm-canvas-handle.is-ne,.mm-canvas-handle.is-sw{cursor:nesw-resize}
       .mm-canvas-marquee{position:absolute;z-index:3;border:1px solid var(--mm-accent);background:var(--mm-accent-ring);pointer-events:none}
       .mm-canvas-bar-right{display:flex;align-items:center;gap:6px;flex:none;position:relative}
-      .mm-canvas-bar-version{padding:6px 10px 2px;color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums}
+      .mm-canvas-bar-version{color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums;letter-spacing:.02em;opacity:.85}
+      .mm-canvas-bar-menu-version{padding:6px 10px 2px;color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums}
       .mm-canvas-bar-more{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background-color 120ms ease,color 120ms ease}
       .mm-canvas-bar-more:hover,.mm-canvas-bar-more.is-open{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
       .mm-canvas-bar-panel{position:absolute;right:0;top:calc(100% + 6px);display:flex;flex-direction:column;gap:1px;min-width:224px;padding:4px;border:1px solid var(--mm-line-strong);border-radius:var(--dsw-radius-md);background:var(--mm-overlay);box-shadow:var(--mm-shadow-float);z-index:30}

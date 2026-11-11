@@ -1,5 +1,32 @@
 # Changelog
 
+## 3.7.0 — 2026-11-11
+
+The board that was dragged around kept losing its contents, and the frame that
+was resized kept ending up somewhere else. Both had the same cause, and it was
+in the document rather than in the gesture.
+
+- A container whose members no longer sit inside it gets them back. The import
+  of a nested frame flattens it into a sibling container, and a resize that
+  re-places members by their pins can then throw those members thousands of
+  units away: the frame's own box and its children's boxes describe two
+  different places. On the board in the report, one frame held 13 members 63,000
+  units to the left of its own edge. The container's box is the part the person
+  still recognises, so the members move back into it and keep the arrangement
+  they had with each other. A member that pokes out of the edge by a little is
+  left alone — that is an ordinary loose child, not a lost one.
+- Resizing such a container carries its members along with it instead of
+  re-placing them by pins that no longer describe anything. The box follows the
+  pointer and the contents follow the box.
+- The build version sits on the canvas bar, not only in the menu, so a
+  screenshot answers "is the fix I made actually running?" without opening
+  anything.
+
+The drag was run against the board in the report: pulling the north-west corner
+100 pixels to the left moved the frame from x=26993 to x=26716, grew it from
+2639 to 2916 units, moved its 13 members by the same 277 units, and left every
+one of them inside the frame.
+
 ## 3.6.1 — 2026-11-11
 
 - Resize handles stop fighting each other on small selections. Four 8px handles
