@@ -163,3 +163,24 @@ test('the summary counts issues by code and never exceeds the cap', () => {
   assert.ok(result.summary.byCode['text-overflow'] > 0);
   assert.equal(result.summary.issues, result.issues.length);
 });
+
+test('a label is measured against the thing painted under it, not the page behind it', () => {
+  // A button is a shape with a sibling label: membership says "page", the
+  // picture says "button", and the picture is what a reader sees.
+  const result = analyzeDesign(board([
+    { id: 'screen', type: 'frame', x: 0, y: 0, w: 1440, h: 900, fill: '#f8fafc', members: ['cta', 'cta-label'] },
+    { id: 'nav', type: 'shape', shape: 'rect', x: 0, y: 0, w: 1440, h: 72, fill: '#ffffff' },
+    { id: 'cta', type: 'shape', shape: 'rect', x: 1200, y: 16, w: 160, h: 40, fill: '#0f172a' },
+    { id: 'cta-label', type: 'text', x: 1232, y: 26, w: 96, h: 20, text: 'Talk to sales', textColor: '#ffffff' },
+  ]));
+  assert.equal(result.issues.filter((issue) => issue.code === 'low-contrast').length, 0, JSON.stringify(result.issues));
+});
+
+test('an auto-generated layer name in a tiny box is not reported as clipped copy', () => {
+  const result = analyzeDesign(board([
+    { id: 'tiny', type: 'shape', shape: 'rect', x: 0, y: 0, w: 16, h: 16, fill: '#000000', text: 'Rectangle 524' },
+    { id: 'copy', type: 'shape', shape: 'rect', x: 40, y: 0, w: 60, h: 16, fill: '#000000', text: 'Card or wallet' },
+  ]));
+  const codes = result.issues.filter((issue) => issue.code === 'text-overflow').map((issue) => issue.nodeId);
+  assert.deepEqual(codes, ['copy'], 'only the sentence someone wrote is reported');
+});

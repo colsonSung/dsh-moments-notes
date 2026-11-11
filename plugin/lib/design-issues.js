@@ -19,6 +19,7 @@ const TEXT_MIN_CONTRAST = 4.5;
 const LARGE_TEXT_SIZE = 18.66; // WCAG large text
 const LARGE_TEXT_MIN_CONTRAST = 3;
 const MAX_ISSUES = 40;
+const PLACEHOLDER_NAME = /^(?:Rectangle|Frame|Ellipse|Group|Vector|Line|Star|Polygon|Image|Slice|Text)(?: \d+)?$/i;
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -98,28 +99,36 @@ export function fillBehind(nodes) {
     if (!CONTAINER_TYPES.has(node.type)) continue;
     for (const member of node.members || []) parent.set(member, node.id);
   }
+  // Anything painted can be the surface a label sits on, not only containers:
+  // a button is a shape, and its white label must be measured against the
+  // button, never against the page behind it.
   const covering = nodes
-    .filter((node) => CONTAINER_TYPES.has(node.type) && typeof node.fill === 'string')
+    .filter((node) => typeof node.fill === 'string' && node.type !== 'text' && node.type !== 'image')
     .sort((left, right) => bounds(left).w * bounds(left).h - bounds(right).w * bounds(right).h);
   const resolved = new Map();
   for (const node of nodes) {
     let fill = typeof node.fill === 'string' ? node.fill : null;
+    // What a label is drawn on is decided by what is painted under it, not by
+    // membership alone: a button label belongs to the page, but its colour has
+    // to be measured against the button. Smallest painted cover wins, because
+    // that is the surface nearest the text.
+    if (!fill) {
+      const box = bounds(node);
+      const centerX = box.x + box.w / 2;
+      const centerY = box.y + box.h / 2;
+      const host = covering.find((painted) => painted.id !== node.id && (() => {
+        const area = bounds(painted);
+        return centerX >= area.x && centerX <= area.x + area.w && centerY >= area.y && centerY <= area.y + area.h;
+      })());
+      fill = host ? host.fill : null;
+    }
+    // A label with nothing painted under its centre still sits on its container.
     let cursor = byId.get(parent.get(node.id));
     const seen = new Set([node.id]);
     while (!fill && cursor && !seen.has(cursor.id)) {
       seen.add(cursor.id);
       fill = typeof cursor.fill === 'string' ? cursor.fill : null;
       cursor = byId.get(parent.get(cursor.id));
-    }
-    if (!fill) {
-      const box = bounds(node);
-      const centerX = box.x + box.w / 2;
-      const centerY = box.y + box.h / 2;
-      const host = covering.find((container) => {
-        const area = bounds(container);
-        return centerX >= area.x && centerX <= area.x + area.w && centerY >= area.y && centerY <= area.y + area.h;
-      });
-      fill = host ? host.fill : null;
     }
     resolved.set(node.id, fill);
   }
@@ -168,6 +177,10 @@ export function analyzeDesign(canvas) {
     const text = typeof node.text === 'string' ? node.text : '';
     if (!text.trim()) continue;
     if (node.type === 'text') continue; // a text box grows; it never clips
+    // A layer name carried into a tiny box ("Rectangle 555") is a placeholder,
+    // not a sentence someone wrote; reporting it as clipped copy teaches the
+    // reader to ignore the report.
+    if (PLACEHOLDER_NAME.test(text.trim())) continue;
     const lines = textLines(node);
     const size = Number(node.fontSize) > 0 ? Number(node.fontSize) : 14;
     const lineHeight = Number(node.lineHeight) > 0 ? Number(node.lineHeight) : 1.25;

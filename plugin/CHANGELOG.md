@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.5.1 — 2026-11-11
+
+- The issue report measures a label against what is painted under it, not against
+  the page behind it: a white button label was reported as 1.05:1 against the
+  page, when the button under it gives 21:1.
+- Layer names dropped into boxes too small to hold them ("Rectangle 555" in a
+  16×16 box) are no longer carried in as copy on import, and are skipped by the
+  report when a board already has them — a placeholder is not a sentence.
+
 ## 3.5.0 — 2026-11-11
 
 The agent can now look at its own work, and a Figma import stops being a

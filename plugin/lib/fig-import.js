@@ -600,8 +600,12 @@ export async function importFigFile(bytes, options = {}) {
       };
       if (kind === 'star') result.points = shapeCount(node, true);
       if (kind === 'polygon') result.sides = shapeCount(node, false);
+      // A layer name carried into a box too small to hold a word is not copy:
+      // keeping it makes every such box look like clipped text forever.
       const characters = nodeLabel(node);
-      if (characters) result.text = characters.slice(0, 2000);
+      const holdsText = base.w >= 32 && base.h >= 18;
+      if (characters && holdsText) result.text = characters.slice(0, 2000);
+      if (characters && !holdsText) report.labelsDropped = (report.labelsDropped || 0) + 1;
       report.imported.shape += 1;
       return result;
     }
