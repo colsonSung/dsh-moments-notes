@@ -26,6 +26,14 @@ test('client is a native module-loader bundle using only React.createElement', (
   assert.doesNotMatch(source, /require\(\s*['"](?!react['"])/, 'must not import external Harness UI components');
 });
 
+test('the client carries the version the package declares', () => {
+  // A stale bundle looks exactly like a bug that was not fixed; the app has to
+  // be able to say which build it is.
+  const version = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version;
+  assert.match(source, new RegExp(`const PLUGIN_VERSION = '${version.replace(/\./g, '\\.')}'`), 'the build stamp matches package.json');
+  includes(/mm-canvas-bar-version/, 'the board menu shows that version');
+});
+
 test('registers the Moments sidebar panel and main page', () => {
   includes(/ctx\.slots\.inject\(\s*['"]sidebar\.panellist['"]/, 'injects the sidebar slot');
   includes(/name\s*:\s*['"]sidebar\.panellist['"][\s\S]{0,240}id\s*:\s*['"]moments-notes['"]/, 'uses the required panel id');

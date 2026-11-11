@@ -5296,7 +5296,10 @@ test('a resize follows the pointer at a zoom other than 100%', async () => {
     await pressElement(plugin, nodeById(plugin, 'card'));
     const handle = cornerHandle(plugin);
     assert.ok(handle, 'the selection shows its handles');
-    await dragResize(plugin, handle, { x: 100, y: 100 }, { x: 150, y: 130 });
+    // Press where the handle is actually drawn: a press has to resolve to the
+    // corner under the pointer.
+    const at = { x: parseFloat(handle.props.style.left), y: parseFloat(handle.props.style.top) };
+    await dragResize(plugin, handle, at, { x: at.x + 50, y: at.y + 30 });
 
     const node = nodeById(plugin, 'card');
     assert.equal(parseFloat(node.props.style.width), 300, 'width follows 100 board units');
@@ -5332,6 +5335,78 @@ test('a frame keeps the size it was dragged to instead of snapping back to its m
     assert.equal(parseFloat(kid.props.style.left), 120, 'children keep their place');
   } finally {
     plugin.restore()
+  }
+});
+
+test('a small selection keeps its four handles from owning the same pixels', async () => {
+  // At 37% zoom a 66x30 box is 25x11 on screen. With a fixed 9px halo all four
+  // handles overlapped, and the last one in the DOM won: dragging the left
+  // corner grew the box to the right.
+  const nodes = [{
+    ...V2_DOCUMENT.nodes[0], id: 'tiny', type: 'shape', shape: 'rect',
+    x: 100, y: 100, w: 66, h: 30, fill: '#ffffff', members: [],
+  }];
+  const plugin = await loadMomentsClient({
+    routes: canvasRoutes({ documents: { c1: resizeDocument(nodes, { x: 0, y: 0, zoom: 0.37 }) } }),
+  });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    await pressElement(plugin, nodeById(plugin, 'tiny'));
+    const handles = findAll(plugin.renderer.root, (element) => String(element.props?.className || '').includes('mm-canvas-handle'));
+    assert.equal(handles.length, 4, 'four corners are offered');
+    const hit = parseFloat(handles[0].props.style['--mm-handle-hit']);
+    assert.ok(hit < 9, `the halo shrinks with the box (got ${hit}px)`);
+    const spacing = Math.min(66, 30) * 0.37;
+    assert.ok(8 + hit * 2 <= spacing, 'no handle reaches past the middle of the selection');
+  } finally {
+    plugin.restore();
+  }
+});
+
+test('a press on a small selection resizes from the corner under the pointer', async () => {
+  // All four halos overlap on a 25x11 pixel selection, so the element that
+  // receives the press is not the corner the person aimed at. The press has to
+  // resolve to the nearest corner: dragging the left edge must grow left.
+  const nodes = [{
+    ...V2_DOCUMENT.nodes[0], id: 'tiny', type: 'shape', shape: 'rect',
+    x: 100, y: 100, w: 66, h: 30, fill: '#ffffff', members: [],
+  }];
+  const plugin = await loadMomentsClient({
+    routes: canvasRoutes({ documents: { c1: resizeDocument(nodes, { x: 0, y: 0, zoom: 0.37 }) } }),
+  });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    await pressElement(plugin, nodeById(plugin, 'tiny'));
+    const handles = findAll(plugin.renderer.root, (element) => String(element.props?.className || '').includes('mm-canvas-handle'));
+    const byId = new Map(handles.map((element) => [element.props['data-handle'], element]));
+    const nw = byId.get('nw');
+    const se = byId.get('se');
+    const left = parseFloat(nw.props.style.left);
+    const top = parseFloat(nw.props.style.top);
+    const width = parseFloat(se.props.style.left) - left;
+    const height = parseFloat(se.props.style.top) - top;
+
+    // Press with the south-east element but two pixels from the LEFT edge: the
+    // nearest corner is on the left, so the drag must grow to the left.
+    const down = makeEvent({ clientX: left + 2, clientY: top + height / 2, buttons: 1 });
+    down.target = se;
+    down.currentTarget = se;
+    se.props.onPointerDown(down);
+    await settle(plugin, 1);
+    const surface = findByClass(plugin.renderer.root, 'mm-canvas-surface');
+    surface.props.onPointerMove(makeEvent({ clientX: left + 2 - 60, clientY: top + height / 2, buttons: 1 }));
+    await settle(plugin, 2);
+    surface.props.onPointerUp(makeEvent({ clientX: left + 2 - 60, clientY: top + height / 2, buttons: 0 }));
+    await settle(plugin, 2);
+
+    const node = nodeById(plugin, 'tiny');
+    const movedLeft = parseFloat(node.props.style.left) < 100;
+    assert.ok(movedLeft, `the box grows to the left (left=${node.props.style.left})`);
+    assert.ok(parseFloat(node.props.style.width) > 66, 'and gets wider');
+  } finally {
+    plugin.restore();
   }
 });
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.6.1 — 2026-11-11
+
+- Resize handles stop fighting each other on small selections. Four 8px handles
+  with a fixed 9px hit halo overlap on a box that is 25×11 screen pixels at 37%
+  zoom, so the last one in the DOM received every press: dragging a corner could
+  grow the box from a different corner than the one aimed at. The halo now
+  shrinks with the selection, and when halos do overlap the press resolves to the
+  corner nearest the pointer.
+- The board menu shows the build version, and a contract test keeps it equal to
+  the package version: "did I get the fix?" was answerable only from a terminal.
+
 ## 3.6.0 — 2026-11-11
 
 Resizing a node follows the pointer and stays where it was dropped. Three

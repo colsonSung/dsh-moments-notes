@@ -1,3 +1,8 @@
+// Shown in the board menu. The contract test keeps it equal to package.json,
+// because "which build am I looking at?" is the first question when a fix does
+// not seem to have landed.
+const PLUGIN_VERSION = '3.6.1';
+
 window.__ModuleLoader__.load({
   id: 'dsh-moments-notes',
   factory(require) {
@@ -5280,6 +5285,59 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /**
+     * Which corner of the selection a press meant, in screen pixels.
+     *
+     * Four 8px handles sit on a box that can be 25px wide at 37% zoom: their
+     * hit halos overlap and the DOM hands the press to whichever element is
+     * painted last, which is how dragging the left corner once grew a box to
+     * the right. Distance decides instead.
+     */
+    /** Whether four handle halos share pixels on this selection. */
+    function canvasHandleHalosOverlap(frame, hit) {
+      if (!frame) return false;
+      const shortest = Math.min(frame.width, frame.height);
+      return HANDLE_SIZE + hit * 2 > shortest / 2;
+    }
+
+    function canvasNearestHandle(event, frame, stage) {
+      if (!frame) return null;
+      // A test renderer has no stage offset; page and selection then share one
+      // coordinate space, which is what subtracting zero does.
+      const rect = stage?.getBoundingClientRect?.() || { left: 0, top: 0 };
+      const x = (event.clientX || 0) - rect.left - frame.left;
+      const y = (event.clientY || 0) - (rect.top || 0) - frame.top;
+      const corners = [
+        { id: 'nw', x: 0, y: 0 },
+        { id: 'ne', x: frame.width, y: 0 },
+        { id: 'sw', x: 0, y: frame.height },
+        { id: 'se', x: frame.width, y: frame.height },
+      ];
+      return corners
+        .map((corner) => ({ id: corner.id, distance: Math.hypot(corner.x - x, corner.y - y) }))
+        .sort((left, right) => left.distance - right.distance)[0].id;
+    }
+
+    const HANDLE_SIZE = 8;
+    const HANDLE_HIT_MAX = 9;
+    const HANDLE_HIT_MIN = 1;
+
+    /**
+     * How far a resize handle's hit area may reach.
+     *
+     * Four handles sit on a box that can be 25 screen pixels wide at 37% zoom.
+     * A fixed 9px halo makes all four zones overlap, and then the last one in
+     * the DOM wins every press: dragging the left corner grew the box to the
+     * right. The halo shrinks with the box so a corner is always the corner
+     * nearest the pointer.
+     */
+    function canvasHandleHitRadius(width, height) {
+      const shortest = Math.min(Number(width) || 0, Number(height) || 0);
+      if (!Number.isFinite(shortest) || shortest <= HANDLE_SIZE) return HANDLE_HIT_MIN;
+      const room = (shortest / 2 - HANDLE_SIZE / 2) / 2;
+      return Math.max(HANDLE_HIT_MIN, Math.min(HANDLE_HIT_MAX, room));
+    }
+
     /** The typography of one node, applied to the text itself. */
       const textStyle = (node) => {
         const style = {};
@@ -5443,13 +5501,17 @@ window.__ModuleLoader__.load({
       // Anchors and their handles exist only in point-editing mode.
       const editingPoints = Boolean(selectedPathNode && pointEditId === selectedPathNode.id);
       const palette = useMemo(() => canvasPalette(stageRef.current), [doc, selected]);
+      const handleHit = selectionFrame
+        ? canvasHandleHitRadius(selectionFrame.width, selectionFrame.height)
+        : HANDLE_HIT_MAX;
       const handles = selectionFrame
         ? [
           { id: 'nw', left: selectionFrame.left, top: selectionFrame.top },
           { id: 'ne', left: selectionFrame.left + selectionFrame.width, top: selectionFrame.top },
           { id: 'sw', left: selectionFrame.left, top: selectionFrame.top + selectionFrame.height },
           { id: 'se', left: selectionFrame.left + selectionFrame.width, top: selectionFrame.top + selectionFrame.height },
-        ].map((handle) => {
+        ]
+          .map((handle) => {
           // While the anchors are shown, a path's endpoints sit on the box
           // corners and a corner handle would cover an anchor. Step the box
           // handles out only in that mode; otherwise they sit on the box.
@@ -6212,7 +6274,9 @@ window.__ModuleLoader__.load({
             setBarMoreOpen(false);
             void openVersionHistory();
           },
-        }, h(Icon, { name: 'refresh', size: 14 }), 'Version history'));
+        }, h(Icon, { name: 'refresh', size: 14 }), 'Version history'),
+        h('div', { className: 'mm-canvas-bar-rule', role: 'separator' }),
+        h('span', { className: 'mm-canvas-bar-version' }, `Moments ${PLUGIN_VERSION}`));
 
       /** The handle a connector is about to snap to. */
       const canvasMagnetView = (() => {
@@ -6844,11 +6908,18 @@ window.__ModuleLoader__.load({
               key: handle.id,
               className: `mm-canvas-handle is-${handle.id}`,
               'data-handle': handle.id,
-              style: { left: `${handle.left}px`, top: `${handle.top}px` },
+              style: { left: `${handle.left}px`, top: `${handle.top}px`, '--mm-handle-hit': `${handleHit}px` },
               onPointerDown: (event) => {
                 event.stopPropagation?.();
                 capturePointer(event);
-                startResize(event, handle.id);
+                // Only when the halos overlap is the receiving element a guess;
+                // then the corner nearest the pointer decides. On a normal box
+                // the element under the pointer is already the right corner.
+                const overlapping = canvasHandleHalosOverlap(selectionFrame, handleHit);
+                startResize(
+                  event,
+                  (overlapping ? canvasNearestHandle(event, selectionFrame, stageRef.current) : null) || handle.id,
+                );
               },
             })),
             editingPoints && selectedPathNode
@@ -8663,7 +8734,8 @@ window.__ModuleLoader__.load({
       .mm-canvas-overlay{position:absolute;inset:0;z-index:2;pointer-events:none}
       .mm-canvas-selection{position:absolute;border:0;outline:1px solid var(--mm-accent-base);outline-offset:2px;border-radius:var(--dsw-radius-xs);pointer-events:none}
       .mm-canvas-handle{position:absolute;width:8px;height:8px;margin:-4px 0 0 -4px;border:1px solid var(--mm-accent-base);border-radius:var(--dsw-radius-xs);background:var(--mm-surface-1);pointer-events:auto;cursor:nwse-resize}
-      .mm-canvas-handle::after,.mm-canvas-anchor::after,.mm-canvas-handle-dot::after{content:"";position:absolute;inset:-9px}
+      .mm-canvas-handle::after{content:"";position:absolute;inset:calc(-1 * var(--mm-handle-hit,9px))}
+      .mm-canvas-anchor::after,.mm-canvas-handle-dot::after{content:"";position:absolute;inset:-9px}
       .mm-canvas-bar-toggle{border:0;background:transparent;color:var(--dsw-alias-label-secondary);border-radius:var(--dsw-radius-sm);width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
       .mm-canvas-bar-toggle.is-open,.mm-canvas-bar-toggle:hover{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
 
@@ -8675,6 +8747,7 @@ window.__ModuleLoader__.load({
       .mm-canvas-handle.is-ne,.mm-canvas-handle.is-sw{cursor:nesw-resize}
       .mm-canvas-marquee{position:absolute;z-index:3;border:1px solid var(--mm-accent);background:var(--mm-accent-ring);pointer-events:none}
       .mm-canvas-bar-right{display:flex;align-items:center;gap:6px;flex:none;position:relative}
+      .mm-canvas-bar-version{padding:6px 10px 2px;color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums}
       .mm-canvas-bar-more{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background-color 120ms ease,color 120ms ease}
       .mm-canvas-bar-more:hover,.mm-canvas-bar-more.is-open{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
       .mm-canvas-bar-panel{position:absolute;right:0;top:calc(100% + 6px);display:flex;flex-direction:column;gap:1px;min-width:224px;padding:4px;border:1px solid var(--mm-line-strong);border-radius:var(--dsw-radius-md);background:var(--mm-overlay);box-shadow:var(--mm-shadow-float);z-index:30}
