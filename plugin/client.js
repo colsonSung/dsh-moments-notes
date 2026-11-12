@@ -1,7 +1,7 @@
 // Shown in the board menu. The contract test keeps it equal to package.json,
 // because "which build am I looking at?" is the first question when a fix does
 // not seem to have landed.
-const PLUGIN_VERSION = '3.7.0';
+const PLUGIN_VERSION = '3.7.1';
 
 window.__ModuleLoader__.load({
   id: 'dsh-moments-notes',
@@ -8650,8 +8650,10 @@ function canvasNeedsFallbackFont(text) {
                 'aria-label': 'Expand the sidebar',
                 'aria-expanded': false,
               },
-                h(PanelIcon, { active: false }),
-                h(Icon, { name: 'chevron', size: 12 }))
+                // Collapsed, the logo is the way back in: a second arrow
+                // beside it says the same thing twice and takes the room the
+                // icon rail needs.
+                h(PanelIcon, { active: false }))
               : h('div', { className: 'mm-side-top' },
                 h('div', { className: 'mm-nav-heading' }, 'Notes'),
                 h('button', {
@@ -8939,7 +8941,7 @@ function canvasNeedsFallbackFont(text) {
       .mm-side-toggle{display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:var(--dsw-radius-xs);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background 120ms ease,color 120ms ease}
       .mm-side-toggle:hover{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
       .mm-side-toggle .mm-icon{transform:rotate(180deg)}
-      .mm-side-logo{display:flex;flex-direction:column;align-items:center;gap:6px;padding:6px 4px;border:0;border-radius:var(--dsw-radius-md);background:transparent;cursor:pointer;color:var(--dsw-alias-label-secondary);transition:background 120ms ease}
+      .mm-side-logo{display:flex;align-items:center;justify-content:center;padding:6px 4px;border:0;border-radius:var(--dsw-radius-md);background:transparent;cursor:pointer;color:var(--dsw-alias-label-secondary);transition:background 120ms ease}
       .mm-side-logo:hover{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
       .mm-side-logo .mm-panel-icon{width:24px;height:24px}
       .mm-nav-heading{padding:0 8px 12px;color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}

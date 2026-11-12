@@ -3244,6 +3244,41 @@ test('the magnet snaps a connector to the nearest handle', async () => {
 
 /* ---------------------------------------------------------- sidebar rail */
 
+test('the folded rail opens from the logo alone, without a second arrow', async () => {
+  // The logo is the way back into the sidebar. An arrow beside it says the
+  // same thing twice and takes the room the icon rail needs.
+  const plugin = await loadMomentsClient({ routes: canvasRoutes() })
+  try {
+    renderMain(plugin)
+    const toggle = findBy(plugin.renderer.root, (element) => (
+      typeof element.props?.onClick === 'function'
+      && accessibleName(element).includes('Collapse the sidebar')
+    ))
+    assert.ok(toggle, 'the sidebar can be folded')
+    await clickElement(plugin, toggle)
+    await settle(plugin, 2)
+
+    const expanders = findAll(plugin.renderer.root, (element) => (
+      element.type === 'button'
+      && typeof element.props?.onClick === 'function'
+      && accessibleName(element).includes('Expand the sidebar')
+    ))
+    assert.equal(expanders.length, 1, 'the rail offers one way out, not two')
+    const logo = findByClass(plugin.renderer.root, 'mm-side-logo')
+    assert.ok(logo, 'the logo is what opens the rail')
+    assert.equal(logo.props.type, 'button', 'and it is the thing you press')
+    // The arrow that used to sit beside the logo is gone: the logo is the
+    // only thing in the top of the folded rail.
+    const icons = findAll(logo, (element) => (
+      element.type === 'svg'
+      && String(element.props?.className || '').includes('mm-icon')
+    ))
+    assert.equal(icons.length, 0, 'no icon sits beside the logo')
+  } finally {
+    plugin.restore()
+  }
+});
+
 test('the collapsed sidebar keeps every way in', async () => {
   const plugin = await loadMomentsClient({ routes: canvasRoutes() })
   try {

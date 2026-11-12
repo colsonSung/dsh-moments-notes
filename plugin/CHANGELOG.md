@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.7.1 — 2026-11-12
+
+- The folded sidebar opens from the logo alone. The logo already was the way
+  back in, and a chevron beside it said the same thing twice: the rail showed
+  an arrow where the logo was enough, and the arrow took the room the icon
+  rail needed. The logo stands on its own now, and pressing it opens the
+  sidebar as before.
+
 ## 3.7.0 — 2026-11-11
 
 The board that was dragged around kept losing its contents, and the frame that
