@@ -14,6 +14,24 @@ const FONT_STACKS = Object.freeze({
   mono: '"SF Mono", Menlo, Consolas, monospace',
   display: '"SF Pro Display", Inter, "Helvetica Neue", system-ui, sans-serif',
 });
+
+/**
+ * The font stack for a piece of text.
+ *
+ * The stacks above are Latin. Text in a script they do not cover needs a
+ * family that does, named after the Latin one so the Latin characters keep
+ * their own face.
+ */
+function fontStackFor(node) {
+  const base = FONT_STACKS[node.fontFamily] || FONT_STACKS.sans;
+  const text = Array.isArray(node.spans) && node.spans.length
+    ? node.spans.map((span) => String(span.text || '')).join('')
+    : String(node.text || '');
+  if (!text) return base;
+  return fontStackWithFallback(text, base);
+}
+import { fontStackFor as fontStackWithFallback } from './font-fallback.js';
+
 const ASSET_ROUTE = '/api/moments-notes/asset';
 const IMAGE_EXTENSIONS = {
   'image/png': 'png',
@@ -151,7 +169,7 @@ function svgShapeLabel(node) {
   const lineHeight = (node.lineHeight || 1.25) * size;
   const lines = textLines(node);
   const firstBaseline = (node.h - lines.length * lineHeight) / 2 + size * 0.82;
-  return `<text x="${node.w / 2}" font-family="${attr(FONT_STACKS[node.fontFamily] || FONT_STACKS.sans)}" font-size="${size}" fill="${node.textColor || '#0f172a'}" text-anchor="middle">`
+  return `<text x="${node.w / 2}" font-family="${attr(fontStackFor(node))}" font-size="${size}" fill="${node.textColor || '#0f172a'}" text-anchor="middle">`
     + lines.map((line, index) => svgLineSpans(
       line,
       node.w / 2,
@@ -169,7 +187,7 @@ function svgTextBox(node) {
   const x = node.textAlign === 'center' ? w / 2 : node.textAlign === 'right' ? w : 0;
   const attributes = [
     `x="${x}"`,
-    `font-family="${attr(FONT_STACKS[node.fontFamily] || FONT_STACKS.sans)}"`,
+    `font-family="${attr(fontStackFor(node))}"`,
     `font-size="${size}"`,
     node.fontWeight ? `font-weight="${node.fontWeight}"` : '',
     node.letterSpacing !== null && node.letterSpacing !== undefined ? `letter-spacing="${node.letterSpacing}"` : '',
@@ -515,7 +533,7 @@ function boxCss(node) {
 
 function textCss(node) {
   const declarations = [
-    `font-family:${FONT_STACKS[node.fontFamily] || FONT_STACKS.sans}`,
+    `font-family:${fontStackFor(node)}`,
     `font-size:${node.fontSize || 14}px`,
   ];
   if (node.fontWeight) declarations.push(`font-weight:${node.fontWeight}`);

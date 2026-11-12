@@ -8,13 +8,15 @@
  * judge of what may be stored. A rejected batch leaves the board untouched.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { CANVAS_LIMITS, summarizeCanvas } from './canvas-domain.js';
 import { exportHtml, exportSpec, exportSvg } from './design-export.js';
 import { analyzeDesign } from './design-issues.js';
 import { dataUrlBytes } from './design-snapshot.js';
+import { decodePng, encodePng } from './png.js';
+import { comparePictures } from './design-regression.js';
 
 const CONTAINERS = new Set(['group', 'frame', 'component']);
 const MAX_OPS = 200;
@@ -319,6 +321,31 @@ const outputSchema = {
 };
 
 /** Tools that author a design board, one scene operation batch at a time. */
+
+/**
+ * Compare two snapshot files.
+ *
+ * The pictures are read into their pixels and compared the way a person would
+ * want them compared: how much of the board changed, and where. The
+ * difference is written next to them so it can be looked at.
+ */
+async function compareSnapshotFiles(baselineBytes, currentBytes, currentPath) {
+  const baseline = decodePng(baselineBytes);
+  const current = decodePng(currentBytes);
+  const result = comparePictures(baseline, current);
+  const differencePath = currentPath.replace(/\.[^.]+$/, '') + '-difference.png';
+  await writeFile(differencePath, encodePng(result.difference));
+  return {
+    score: result.score,
+    changed: result.changed,
+    same: result.same,
+    verdict: result.verdict,
+    differencePath,
+    baselineSize: { width: baseline.width, height: baseline.height },
+    currentSize: { width: current.width, height: current.height },
+  };
+}
+
 export function createDesignTools({
   getCanvasStore, diagnostics, snapshots, importReports, snapshotDir,
 }) {
@@ -528,6 +555,7 @@ export function createDesignTools({
           },
         },
         scale: { type: 'number', minimum: 0.5, maximum: 3, description: 'For view:"image": pixels per board unit; defaults to 2.' },
+        baseline: { type: 'string', description: 'For view:"image": a PNG written by an earlier inspect to compare against; the result says how much of the board changed.' },
         waitMs: { type: 'integer', minimum: 1000, maximum: 30000, description: 'For view:"image": how long to wait for the Design panel to answer; defaults to 12000.' },
       },
     },
@@ -619,12 +647,34 @@ export function createDesignTools({
           await mkdir(snapshotDir, { recursive: true });
           const filePath = joinPath(snapshotDir, `${safeFileStem(document.title)}-${Date.now()}.${decoded.type === 'jpeg' ? 'jpg' : 'png'}`);
           await writeFile(filePath, decoded.bytes);
+
+          // A picture that is meant to be the same has to be the same: the
+          // baseline is compared with the picture that was just taken, and the
+          // answer is how much of the board changed.
+          let comparison = null;
+          if (args.baseline) {
+            const baselinePath = joinPath(snapshotDir, args.baseline);
+            const baselineBytes = await readFile(baselinePath).catch(() => null);
+            if (!baselineBytes) {
+              return {
+                ok: false,
+                summary: `There is no baseline named "${args.baseline}" in the snapshot folder.`,
+                data: { issues: analysis.issues, checks: analysis.summary, reason: 'no-baseline' },
+              };
+            }
+            comparison = await compareSnapshotFiles(baselineBytes, decoded.bytes, filePath);
+          }
+
+          const summary = comparison
+            ? `Wrote a ${decoded.type.toUpperCase()} of "${document.title}" to ${filePath} (${Math.round(decoded.bytes.length / 1024)} KB). Against the baseline the board is ${comparison.verdict}: ${(comparison.score * 100).toFixed(1)}% the same, ${(comparison.changed * 100).toFixed(2)}% of the pixels changed.${comparison.differencePath ? ` The difference is at ${comparison.differencePath}.` : ''}`
+            : `Wrote a ${decoded.type.toUpperCase()} of "${document.title}" to ${filePath} (${Math.round(decoded.bytes.length / 1024)} KB). Look at it before claiming the design is done.`;
           return {
             ok: true,
-            summary: `Wrote a ${decoded.type.toUpperCase()} of "${document.title}" to ${filePath} (${Math.round(decoded.bytes.length / 1024)} KB). Look at it before claiming the design is done.`,
+            summary,
             data: {
               ...boardDigest(document),
               image: { path: filePath, bytes: decoded.bytes.length, type: decoded.type },
+              ...(comparison ? { comparison } : {}),
               issues: analysis.issues,
               checks: analysis.summary,
             },

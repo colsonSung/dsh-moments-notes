@@ -495,3 +495,93 @@ test('the panel offers a quick capture button in the Harness chrome', () => {
   includes(/api\(\s*'float-open'/, 'opens the desktop float');
   includes(/api\(\s*'float-close'/, 'closes the desktop float again');
 });
+
+test('the undo stack holds changes, not copies of the board', () => {
+  // The stack used to hold the whole document: one changed field carried every
+  // other node with it. It now holds the change itself.
+  includes(/function canvasDiffCommands\(/, 'the browser half can tell what changed');
+  includes(/function canvasInvertCommand\(/, 'a change knows how to undo itself');
+  includes(/canvasApplyCommands\(/, 'undoing applies the inverses');
+  includes(/canvasDiffCommands\(current\.nodes, next\.nodes/, 'the change is the difference between two states');
+  assert.doesNotMatch(source, /setHistory\(\(items\) => \[\.\.\.items, \{ nodes: current\.nodes, edges: current\.edges \}\]/,
+    'the stack does not keep a bare copy of the board');
+});
+
+test('the bundle declares what it uses before it uses it', () => {
+  // A constant used above its declaration is a ReferenceError at the moment
+  // it is first read, and nothing in the test suite would notice: the file
+  // parses, the function is there, and the browser fails when the person
+  // draws.
+  // The code without its comments and strings: a name in a comment or in a
+  // string is a word, not a use.
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+  const declared = [...code.matchAll(/^\s*const\s+([A-Z_][A-Z0-9_]*)\s*=/gm)]
+    .map((match) => ({ name: match[1], at: match.index }));
+  for (const declaration of declared) {
+    const use = new RegExp(`(?<![\\w.$])${declaration.name}(?![\\w$])`, 'g');
+    let match = use.exec(code);
+    while (match) {
+      if (match.index < declaration.at) {
+        assert.fail(`the bundle uses ${declaration.name} before it declares it`);
+      }
+      match = use.exec(code);
+    }
+  }
+});
+
+test('the command model in the bundle is the one in the domain', () => {
+  // The browser half cannot import the domain module, so the same functions
+  // live in both places. This asks them to be the same: a command that works
+  // on the server and fails in the browser is worse than no command at all.
+  const domain = readFileSync(fileURLToPath(new URL('../lib/canvas-apply.js', import.meta.url)), 'utf8');
+  const commands = readFileSync(fileURLToPath(new URL('../lib/canvas-commands.js', import.meta.url)), 'utf8');
+  const shape = (text) => text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // The browser half renames the functions so they do not collide with the
+  // ones already in the bundle; the bodies must otherwise be identical.
+  const browser = shape(source.slice(
+    source.indexOf('    /* ---------------------------------------------------------- commands'),
+    source.indexOf('    function canvasBoundsOf(nodes) {'),
+  ));
+  const expected = shape(commands + '\n' + domain);
+  // The domain names them plainly; the browser half prefixes them so they do
+  // not collide with the names already in the bundle.
+  const pairs = [
+    ['applyCommand', 'canvasApplyCommand'],
+    ['applyCommands', 'canvasApplyCommands'],
+    ['diffCommands', 'canvasDiffCommands'],
+    ['commandForUpdate', 'canvasCommandForUpdate'],
+    ['commandForInsert', 'canvasCommandForInsert'],
+    ['commandForRemove', 'canvasCommandForRemove'],
+  ];
+  for (const [plain, prefixed] of pairs) {
+    assert.ok(browser.includes(`function ${prefixed}(`), `the bundle carries ${prefixed}`);
+    assert.ok(expected.includes(`function ${plain}(`), `the domain carries ${plain}`);
+  }
+  const commandsText = shape(commands);
+  assert.ok(commandsText.includes('function invertCommand('), 'the domain carries invertCommand');
+  assert.ok(browser.includes('function canvasInvertCommand('), 'the bundle carries canvasInvertCommand');
+  // The command types are the contract between the two halves.
+  for (const type of ['insert', 'remove', 'reparent', 'update', 'insert-page', 'remove-page', 'set-variables', 'set-theme']) {
+    assert.ok(browser.includes(`'${type}'`), `the bundle handles the ${type} command`);
+    assert.ok(expected.includes(`'${type}'`), `the domain handles the ${type} command`);
+  }
+});
+
+test('text in a script the Latin stacks do not cover gets a font that has it', () => {
+  // A document that says 商户入驻审核 has no glyph in Inter, SF Pro, Georgia
+  // or SF Mono. Without a named fallback the text is tofu on one machine and
+  // a different face on the next.
+  includes(/function canvasScriptOfChar\(/, 'the bundle detects the script of a character');
+  includes(/function canvasFontStackFor\(/, 'the bundle builds a stack that covers the text');
+  includes(/canvasFontStackFor\(\s*canvasNodeTextOf\(node\)/, 'the painted font covers the node\'s own text');
+  assert.match(source, /'PingFang SC'/, 'names a family the machine may already have');
+  assert.match(source, /'Noto Sans SC'/, 'names the open family as the fallback of last resort');
+});

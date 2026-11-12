@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { applyOps, diffDocument } from './canvas-ops.js';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 
@@ -170,18 +171,76 @@ export async function openCanvasRepository(options = {}) {
     return { version: 1, entries: {} };
   }
 
-  function pushVersion(history, canvasId, canvas) {
+  /**
+   * Record a version as the change that produced it.
+   *
+   * A version used to be a copy of the whole board: forty of them made the
+   * history file bigger than the board itself. A version is now the ops that
+   * turn the version before it into this one, which is what the board changed
+   * by. The first version of a board is still a snapshot, because there is
+   * nothing before it to be a difference from.
+   */
+  function pushVersion(history, canvasId, canvas, previous) {
     const list = Array.isArray(history.entries[canvasId]) ? history.entries[canvasId] : [];
-    list.push({
+    // The version history is only ever applied forwards, so the ops do not
+    // carry the values they replace: on a board that was re-imported whole,
+    // that halves what the history file costs.
+    const ops = previous
+      ? diffDocument(previous.nodes, canvas.nodes, { inverse: false })
+      : null;
+    const entry = {
       id: createId(),
       at: canvas.updatedAt,
       title: canvas.title,
       nodeCount: canvas.nodes.length,
-      nodes: clone(canvas.nodes),
-      edges: clone(canvas.edges),
-      tokens: clone(canvas.tokens),
-    });
+    };
+    if (ops) {
+      entry.ops = ops;
+      entry.edgeOps = diffDocument(previous.edges, canvas.edges);
+      entry.tokens = clone(canvas.tokens);
+    } else {
+      // The first version has nothing to be a difference from, so it is the
+      // whole board. Later versions are differences from it.
+      entry.nodes = clone(canvas.nodes);
+      entry.edges = clone(canvas.edges);
+      entry.tokens = clone(canvas.tokens);
+      entry.base = true;
+    }
+    list.push(entry);
     history.entries[canvasId] = list.slice(-HISTORY_LIMIT);
+    return entry;
+  }
+
+  /**
+   * Push the board as it is now, as the next version.
+   *
+   * The board that was replaced is the version before this one: the history
+   * reads as the sequence of boards the file went through.
+   */
+  function pushSavedVersion(history, canvasId, canvas, previousNodes) {
+    return pushVersion(history, canvasId, canvas, previousNodes ? { nodes: previousNodes } : null);
+  }
+
+  /**
+   * The board a version holds.
+   *
+   * A version that carries ops is applied to the version before it; the first
+   * version carries the whole board.
+   */
+  function nodesOfVersion(list, index) {
+    const entry = list[index];
+    if (!entry) return [];
+    if (entry.base || !entry.ops) return entry.nodes ?? [];
+    const previous = nodesOfVersion(list, index - 1);
+    return applyOps(previous, entry.ops);
+  }
+
+  function edgesOfVersion(list, index) {
+    const entry = list[index];
+    if (!entry) return [];
+    if (entry.base || !entry.edgeOps) return entry.edges ?? [];
+    const previous = edgesOfVersion(list, index - 1);
+    return applyOps(previous, entry.edgeOps);
   }
 
   function mutate(callback) {
@@ -270,9 +329,14 @@ export async function openCanvasRepository(options = {}) {
         // own methods, so a scene write can neither add nor drop one.
         comments: current.comments ?? [],
       });
-      // The document being replaced becomes a version before it is overwritten.
+      // Each save keeps the document it replaced, so the history reads as the
+      // sequence of boards the file went through. A version after the first
+      // is the difference from the version before it, which is what the
+      // previous board looked like.
       const versions = await loadHistory();
-      pushVersion(versions, idToSave, current);
+      const list = Array.isArray(versions.entries[idToSave]) ? versions.entries[idToSave] : [];
+      const previous = list.length ? nodesOfVersion(list, list.length - 1) : null;
+      pushVersion(versions, idToSave, current, previous ? { nodes: previous } : null);
       await atomicWrite(historyPath, versions);
       draft.canvases[index] = canvas;
       return canvas;
@@ -302,8 +366,11 @@ export async function openCanvasRepository(options = {}) {
       const list = Array.isArray(stored.entries[idToRestore]) ? stored.entries[idToRestore] : [];
       const snapshot = list.find(({ id: candidate }) => candidate === versionId);
       if (!snapshot) throw failure(`That version is not on this board: ${versionId}`, 'VERSION_NOT_FOUND');
-      pushVersion(stored, idToRestore, current);
+      const currentList = Array.isArray(stored.entries[idToRestore]) ? stored.entries[idToRestore] : [];
+      const currentNodes = currentList.length ? nodesOfVersion(currentList, currentList.length - 1) : current.nodes;
+      pushVersion(stored, idToRestore, current, { nodes: currentNodes });
       await atomicWrite(historyPath, stored);
+      const versionIndex = list.findIndex(({ id: candidate }) => candidate === versionId);
       const canvas = normalizeCanvasDocument({
         version: CANVAS_VERSION,
         id: current.id,
@@ -313,8 +380,8 @@ export async function openCanvasRepository(options = {}) {
         updatedAt: readNow(),
         camera: current.camera,
         tokens: snapshot.tokens === undefined ? current.tokens : snapshot.tokens,
-        nodes: snapshot.nodes ?? [],
-        edges: snapshot.edges ?? [],
+        nodes: nodesOfVersion(list, versionIndex),
+        edges: edgesOfVersion(list, versionIndex),
         comments: current.comments ?? [],
       });
       draft.canvases[index] = canvas;

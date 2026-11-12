@@ -2139,6 +2139,98 @@ test('a drag moves a node and the undo puts it back', async () => {
   }
 })
 
+test('an undo puts every node back exactly where it was, on a board of any size', async () => {
+  // The undo stack used to hold a copy of the whole board, so a change to one
+  // node carried every other node with it. It now holds the change itself, and
+  // this asks the harder question: does the undo restore the board exactly,
+  // including the nodes the change did not touch?
+  const nodes = [
+    { ...V2_DOCUMENT.nodes[0], id: 'card', type: 'shape', shape: 'rect', x: 100, y: 100, w: 200, h: 100, fill: '#ffffff', members: [] },
+    { ...V2_DOCUMENT.nodes[0], id: 'other', type: 'shape', shape: 'rect', x: 400, y: 300, w: 120, h: 80, fill: '#eeeeee', members: [] },
+    { ...V2_DOCUMENT.nodes[0], id: 'panel', type: 'frame', x: 50, y: 50, w: 400, h: 300, fill: '#ffffff', members: ['inner'] },
+    { ...V2_DOCUMENT.nodes[0], id: 'inner', type: 'shape', shape: 'rect', x: 80, y: 80, w: 100, h: 40, fill: '#ffffff', members: [] },
+  ];
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: resizeDocument(nodes) } }) });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    const before = nodes.map((node) => `${node.id}:${node.x},${node.y},${node.w},${node.h}`).sort();
+
+    await pressElement(plugin, nodeById(plugin, 'card'));
+    await dragOn(plugin, nodeById(plugin, 'card'), { from: { x: 100, y: 100 }, to: { x: 220, y: 160 } });
+
+    const moved = nodeById(plugin, 'card');
+    assert.notEqual(parseFloat(moved.props.style.left), 100, 'the drag moved the node');
+
+    await pressKey(plugin, 'z', { metaKey: true });
+
+    const boxOf = (id) => {
+      // A frame is drawn as a container, a leaf as a node.
+      const leaf = canvasNodes(plugin).find((node) => node.props['data-node-id'] === id);
+      const container = leaf ? null : containerById(plugin, id);
+      const node = leaf || container;
+      assert.ok(node, `the canvas must draw the node ${id}`);
+      return `${id}:${Math.round(parseFloat(node.props.style.left))},${Math.round(parseFloat(node.props.style.top))},${Math.round(parseFloat(node.props.style.width))},${Math.round(parseFloat(node.props.style.height))}`;
+    };
+    const after = ['card', 'other', 'panel', 'inner'].map(boxOf).sort();
+    assert.deepEqual(after, before, 'the undo puts every node back exactly where it was');
+  } finally {
+    plugin.restore();
+  }
+});
+
+test('an undo is saved, so the board on disk matches the board on screen', async () => {
+  // The board on disk has to follow the board on screen: an undo that only
+  // changes the picture leaves the file holding the change that was just
+  // taken back.
+  const nodes = [{
+    ...V2_DOCUMENT.nodes[0], id: 'card', type: 'shape', shape: 'rect',
+    x: 100, y: 100, w: 200, h: 100, fill: '#ffffff', members: [],
+  }];
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: resizeDocument(nodes) } }) });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    await pressElement(plugin, nodeById(plugin, 'card'));
+    await dragOn(plugin, nodeById(plugin, 'card'), { from: { x: 100, y: 100 }, to: { x: 220, y: 160 } });
+    await sleep(900);
+    const savedAfterDrag = plugin.fetch.calls.filter((call) => call.method === 'canvas-save').at(-1);
+    assert.equal(savedAfterDrag.payload.nodes.find((node) => node.id === 'card').x, 220, 'the drag was saved');
+
+    await pressKey(plugin, 'z', { metaKey: true });
+    await sleep(900);
+    const saves = plugin.fetch.calls.filter((call) => call.method === 'canvas-save');
+    const savedAfterUndo = saves.at(-1);
+    assert.ok(savedAfterUndo, 'the undo asks for a save');
+    assert.equal(savedAfterUndo.payload.nodes.find((node) => node.id === 'card').x, 100, 'the saved board is the one that was undone');
+  } finally {
+    plugin.restore();
+  }
+});
+
+test('a redo re-applies the change that was undone', async () => {
+  const nodes = [{
+    ...V2_DOCUMENT.nodes[0], id: 'card', type: 'shape', shape: 'rect',
+    x: 100, y: 100, w: 200, h: 100, fill: '#ffffff', members: [],
+  }];
+  const plugin = await loadMomentsClient({ routes: canvasRoutes({ documents: { c1: resizeDocument(nodes) } }) });
+  try {
+    renderMain(plugin);
+    await enterCanvasMode(plugin);
+    await pressElement(plugin, nodeById(plugin, 'card'));
+    await dragOn(plugin, nodeById(plugin, 'card'), { from: { x: 100, y: 100 }, to: { x: 220, y: 160 } });
+    const dragged = parseFloat(nodeById(plugin, 'card').props.style.left);
+
+    await pressKey(plugin, 'z', { metaKey: true });
+    assert.equal(parseFloat(nodeById(plugin, 'card').props.style.left), 100, 'the undo puts it back');
+
+    await pressKey(plugin, 'z', { metaKey: true, shiftKey: true });
+    assert.equal(parseFloat(nodeById(plugin, 'card').props.style.left), dragged, 'the redo puts the drag back');
+  } finally {
+    plugin.restore();
+  }
+});
+
 test('the wheel with the command key zooms the world', async () => {
   const plugin = await loadMomentsClient({ routes: canvasRoutes() })
   try {

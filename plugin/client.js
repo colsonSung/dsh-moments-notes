@@ -2018,6 +2018,584 @@ window.__ModuleLoader__.load({
       return nodes;
     }
 
+    /* ---------------------------------------------------------- commands
+     *
+     * The undo stack holds what changed, not a copy of the board: an edit
+     * is a command and its inverse is a command too. These are the same
+     * functions as lib/canvas-apply.js and lib/canvas-commands.js, which the
+     * contract test keeps in step.
+     */
+
+    /** The node types that can hold other nodes. */
+    const CANVAS_COMMAND_CONTAINERS = new Set(['group', 'frame', 'component']);
+
+/**
+ * Edit commands and their exact inverses.
+ *
+ * The undo stack used to hold whole documents: one changed field meant a
+ * copy of every node and edge. A command is data, and its inverse is data
+ * too, so the stack costs what the change costs.
+ *
+ * Every command here is invertible without knowing the document: the inverse
+ * carries the values the command is about to overwrite.
+ */
+
+/** The kinds of edit a document can be changed by. */
+const CANVAS_COMMANDS = Object.freeze([
+  'insert',
+  'remove',
+  'reparent',
+  'update',
+  'insert-page',
+  'remove-page',
+  'set-variables',
+  'set-theme',
+]);
+
+/** A new node, placed under a parent at a position among its children. */
+function insertCommand({ parent, index, nodes }) {
+  return { type: 'insert', parent, index, nodes };
+}
+
+/** A node and its subtree, taken out of the document. */
+function removeCommand({ id, parent, index, nodes }) {
+  return { type: 'remove', id, parent, index, nodes };
+}
+
+/** A node moved to another parent, or to another place among its siblings. */
+function reparentCommand({ id, parent, index, fromParent, fromIndex }) {
+  return { type: 'reparent', id, parent, index, fromParent, fromIndex };
+}
+
+/**
+ * A node's own properties changed.
+ *
+ * Only the fields that differ are carried, and only those are restored: the
+ * children and the parent of a node are not the node's own properties.
+ */
+function updateCommand({ id, changes, before }) {
+  return { type: 'update', id, changes, before };
+}
+
+/** A page, and the subtree under it, placed among the document's pages. */
+function insertPageCommand({ index, nodes }) {
+  return { type: 'insert-page', index, nodes };
+}
+
+/** A page and its subtree, taken out of the document. */
+function removePageCommand({ id, index, nodes }) {
+  return { type: 'remove-page', id, index, nodes };
+}
+
+/** The document's variables and collections replaced. */
+function setVariablesCommand({ variables, collections, before }) {
+  return { type: 'set-variables', variables, collections, before };
+}
+
+/** The document's theme replaced. */
+function setThemeCommand({ theme, before }) {
+  return { type: 'set-theme', theme, before };
+}
+
+/**
+ * The command that undoes this one.
+ *
+ * The inverse is built from what the command carries, not from the document:
+ * undo must work on a document that has moved on since.
+ */
+function canvasInvertCommand(command) {
+  if (!command || typeof command !== 'object') return null;
+  switch (command.type) {
+    case 'insert':
+      // Undoing an insert means taking the nodes back out.
+      return { type: 'remove', id: command.nodes?.[0]?.id, parent: command.parent, index: command.index, nodes: command.nodes };
+    case 'remove':
+      // Undoing a remove means putting the nodes back where they were. Only
+      // the root of the removed subtree goes back under the parent: the rest
+      // of the subtree belongs under the root, not beside it.
+      return {
+        type: 'insert',
+        parent: command.parent,
+        index: command.index,
+        nodes: command.nodes?.slice(0, 1),
+        restore: command.nodes,
+      };
+    case 'reparent':
+      return { type: 'reparent', id: command.id, parent: command.fromParent, index: command.fromIndex, fromParent: command.parent, fromIndex: command.index };
+    case 'update':
+      return { type: 'update', id: command.id, changes: command.before || {}, before: command.changes || {} };
+    case 'insert-page':
+      return { type: 'remove-page', id: command.nodes?.[0]?.id, index: command.index, nodes: command.nodes };
+    case 'remove-page':
+      return { type: 'insert-page', index: command.index, nodes: command.nodes };
+    case 'set-variables':
+      return { type: 'set-variables', variables: command.before?.variables, collections: command.before?.collections, before: { variables: command.variables, collections: command.collections } };
+    case 'set-theme':
+      return { type: 'set-theme', theme: command.before, before: command.theme };
+    default:
+      return null;
+  }
+}
+
+/** A short line saying what the command did, for a history list. */
+function canvasDescribeCommand(command) {
+  if (!command || typeof command !== 'object') return '';
+  switch (command.type) {
+    case 'insert':
+      return `Added ${command.nodes?.length || 1} object${command.nodes?.length === 1 ? '' : 's'}`;
+    case 'remove':
+      return `Removed ${command.nodes?.length || 1} object${command.nodes?.length === 1 ? '' : 's'}`;
+    case 'reparent':
+      return 'Moved an object';
+    case 'update':
+      return `Changed ${Object.keys(command.changes || {}).join(', ') || 'an object'}`;
+    case 'insert-page':
+      return 'Added a page';
+    case 'remove-page':
+      return 'Removed a page';
+    case 'set-variables':
+      return 'Changed the variables';
+    case 'set-theme':
+      return 'Changed the theme';
+    default:
+      return 'Changed the board';
+  }
+}
+
+/**
+ * Applying edit commands to a document.
+ *
+ * A command is data; this module turns it into a new document. Every
+ * function returns a new list of nodes rather than changing the one it was
+ * given, so an undo can be applied to the same document the edit was.
+ */
+
+/** The container that holds a node, and where in its member list. */
+function canvasOwnerOf(nodes, id) {
+  for (const node of nodes) {
+    if (!CANVAS_COMMAND_CONTAINERS.has(node.type)) continue;
+    const index = (node.members || []).indexOf(id);
+    if (index >= 0) return { parent: node.id, index };
+  }
+  return { parent: null, index: 0 };
+}
+
+/** A container with a new member list. */
+function canvasWithMembers(nodes, parentId, members) {
+  if (!parentId) return nodes;
+  return nodes.map((node) => (node.id === parentId ? { ...node, members } : node));
+}
+
+/** The subtree under a node, the node first. */
+function canvasSubtreeOf(nodes, rootId) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const out = [];
+  const walk = (id) => {
+    const node = byId.get(id);
+    if (!node) return;
+    out.push(node);
+    for (const memberId of node.members || []) walk(memberId);
+  };
+  walk(rootId);
+  return out;
+}
+
+/** The nodes a command adds, without the ones already in the document. */
+function canvasWithoutExisting(nodes, added) {
+  if (!added || !added.length) return nodes;
+  const present = new Set(nodes.map((node) => node.id));
+  const fresh = added.filter((node) => !present.has(node.id));
+  return fresh.length ? [...nodes, ...fresh] : nodes;
+}
+
+/**
+ * Apply one command.
+ *
+ * The result is a new list of nodes; the caller keeps the edges and the rest
+ * of the document. A command that does not apply (its target is gone) returns
+ * the nodes unchanged rather than throwing: the undo stack outlives the
+ * document it was built from.
+ */
+function canvasApplyCommand(nodes, command) {
+  if (!command || typeof command !== 'object') return nodes;
+  switch (command.type) {
+    case 'insert': {
+      const parent = command.parent;
+      const current = parent ? (nodes.find((node) => node.id === parent)?.members || []) : [];
+      const members = [...current];
+      const at = Math.max(0, Math.min(members.length, command.index ?? members.length));
+      members.splice(at, 0, ...(command.nodes || []).map((node) => node.id));
+      // A restore brings back a whole subtree: the root goes under the
+      // parent, and the rest of the subtree comes back with its own children.
+      const restored = command.restore || command.nodes;
+      return canvasWithMembers(canvasWithoutExisting(nodes, restored), parent, members);
+    }
+    case 'remove': {
+      // The whole subtree goes: leaving a child behind would leave an
+      // orphan that the membership rules would then reject.
+      const gone = new Set((command.nodes || []).map((node) => node.id));
+      const kept = nodes.filter((node) => !gone.has(node.id));
+      const parent = command.parent;
+      if (!parent) return kept;
+      const container = kept.find((node) => node.id === parent);
+      if (!container) return kept;
+      const members = (container.members || []).filter((id) => !gone.has(id));
+      return kept.map((node) => (node.id === parent ? { ...node, members } : node));
+    }
+    case 'reparent': {
+      const fromParent = command.fromParent;
+      const toParent = command.parent;
+      let next = nodes;
+      // The node leaves the container it was in. A node that had no container
+      // has nothing to leave, and its place in the tree is its absence.
+      if (fromParent) {
+        const container = next.find((node) => node.id === fromParent);
+        if (container) {
+          const members = (container.members || []).filter((id) => id !== command.id);
+          next = next.map((node) => (node.id === fromParent ? { ...node, members } : node));
+        }
+      }
+      if (toParent) {
+        const container = next.find((node) => node.id === toParent);
+        if (container) {
+          const members = (container.members || []).filter((id) => id !== command.id);
+          const at = Math.max(0, Math.min(members.length, command.index ?? members.length));
+          members.splice(at, 0, command.id);
+          next = next.map((node) => (node.id === toParent ? { ...node, members } : node));
+        }
+      }
+      return next;
+    }
+    case 'update': {
+      const changes = command.changes || {};
+      return nodes.map((node) => {
+        if (node.id !== command.id) return node;
+        // The children and the parent belong to the tree, not to the node's
+        // own properties: a change of a text or a size must not move a node
+        // out of its container.
+        const { members, ...rest } = node;
+        return { ...rest, ...changes, members };
+      });
+    }
+    default:
+      return nodes;
+  }
+}
+
+/**
+ * Apply a list of commands in order.
+ */
+function canvasApplyCommands(nodes, commands) {
+  return (commands || []).reduce((current, command) => canvasApplyCommand(current, command), nodes);
+}
+
+/**
+ * The command that records a change to a node's own properties.
+ *
+ * Only the fields that actually differ are carried, so an update of one text
+ * does not make the undo stack carry every property of the node.
+ */
+function canvasCommandForUpdate(node, changes) {
+  const before = {};
+  const differing = {};
+  for (const [key, value] of Object.entries(changes || {})) {
+    if (key === 'members' || key === 'id') continue;
+    if (node[key] === value) continue;
+    before[key] = node[key];
+    differing[key] = value;
+  }
+  if (!Object.keys(differing).length) return null;
+  return { type: 'update', id: node.id, changes: differing, before };
+}
+
+/**
+ * The command that records a node being added under a parent.
+ */
+function canvasCommandForInsert(parent, nodes, index) {
+  return { type: 'insert', parent: parent?.id ?? null, index, nodes };
+}
+
+/**
+ * The command that records a node being taken out of the document.
+ *
+ * The removed subtree travels with the command, so undo puts back exactly
+ * what was there rather than a fresh copy.
+ */
+function canvasCommandForRemove(nodes, id) {
+  const removed = canvasSubtreeOf(nodes, id);
+  const owner = canvasOwnerOf(nodes, id);
+  return { type: 'remove', id, parent: owner.parent, index: owner.index, nodes: removed };
+}
+
+/**
+ * The commands that turn one document into another.
+ *
+ * This is what lets the undo stack hold a change instead of a copy of the
+ * whole board: the difference between two states is expressed as commands,
+ * and undoing is applying their inverses.
+ */
+function canvasDiffCommands(beforeNodes, afterNodes) {
+  const before = new Map(beforeNodes.map((node) => [node.id, node]));
+  const after = new Map(afterNodes.map((node) => [node.id, node]));
+  const commands = [];
+
+  // What left the document. A node whose parent also left is part of that
+  // parent's subtree: removing the parent takes the child with it, so a
+  // separate command for the child would undo it twice.
+  const removed = beforeNodes.filter((node) => !after.has(node.id));
+  const removedIds = new Set(removed.map((node) => node.id));
+  const removedRoots = removed.filter((node) => {
+    const owner = canvasOwnerOf(beforeNodes, node.id);
+    return !owner.parent || !removedIds.has(owner.parent);
+  });
+  for (const node of removedRoots) {
+    commands.push(canvasCommandForRemove(beforeNodes, node.id));
+  }
+
+  // What arrived, shallowest first, so a parent is in place before its
+  // children are added under it.
+  const added = afterNodes.filter((node) => !before.has(node.id));
+  const addedDepth = (node) => {
+    let depth = 0;
+    let cursor = node;
+    const seen = new Set();
+    while (cursor && !seen.has(cursor.id)) {
+      seen.add(cursor.id);
+      const parentId = cursor.id;
+      const parent = afterNodes.find((item) => (item.members || []).includes(parentId));
+      if (!parent) break;
+      depth += 1;
+      cursor = parent;
+    }
+    return depth;
+  };
+  for (const node of added.sort((a, b) => addedDepth(a) - addedDepth(b))) {
+    const owner = canvasOwnerOf(afterNodes, node.id);
+    commands.push(canvasCommandForInsert({ id: owner.parent }, canvasSubtreeOf(afterNodes, node.id), owner.index));
+  }
+
+  // What stayed but changed. A node that moved to another container is a
+  // reparent, not an update: its place in the tree is not its own property.
+  for (const node of afterNodes) {
+    const old = before.get(node.id);
+    if (!old) continue;
+    const ownerBefore = canvasOwnerOf(beforeNodes, node.id);
+    const ownerAfter = canvasOwnerOf(afterNodes, node.id);
+    if (ownerBefore.parent !== ownerAfter.parent) {
+      commands.push({
+        type: 'reparent',
+        id: node.id,
+        parent: ownerAfter.parent,
+        index: ownerAfter.index,
+        fromParent: ownerBefore.parent,
+        fromIndex: ownerBefore.index,
+        // A node that had no container is not in the tree; putting it back
+        // means taking it out of the one it was put into.
+        hadParent: ownerBefore.parent !== null,
+      });
+    }
+    const changes = {};
+    for (const key of Object.keys(node)) {
+      if (key === 'members' || key === 'id') continue;
+      if (old[key] !== node[key]) changes[key] = node[key];
+    }
+    const command = canvasCommandForUpdate(old, changes);
+    if (command) commands.push(command);
+  }
+
+  return commands;
+}
+
+    /** The text of a node, whether it is plain or styled runs. */
+    function canvasNodeTextOf(node) {
+      if (Array.isArray(node.spans) && node.spans.length) {
+        return node.spans.map((span) => String(span.text || '')).join('');
+      }
+      return String(node.text || '');
+    }
+
+    /* ------------------------------------------------------------- fonts
+     *
+     * The stacks in the canvas are Latin. Text in a script they do not
+     * cover needs a family that does, or it renders as tofu. These are
+     * the same functions as lib/font-fallback.js, which the contract test
+     * keeps in step.
+     */
+
+/**
+ * Fonts that cover the scripts a document actually uses.
+ *
+ * The stacks in the canvas are Latin: Inter, SF Pro, Georgia, SF Mono. A
+ * document that says 商户入驻审核 has no glyph in any of them, so the text
+ * falls back to whatever the system offers — which is tofu on a machine with
+ * no CJK font, and a different face on every machine.
+ *
+ * The fix is the same as desigma's: detect the script the text is written in,
+ * and name a font that covers it, preferring one the machine already has and
+ * falling back to an open family that can be fetched.
+ */
+
+/** The scripts whose glyphs a Latin stack cannot cover. */
+const CANVAS_SCRIPTS = Object.freeze(['arabic', 'hebrew', 'devanagari', 'han', 'kana', 'hangul']);
+
+/** The open family that covers each script. */
+const SCRIPT_FAMILY = Object.freeze({
+  arabic: 'Noto Sans Arabic',
+  hebrew: 'Noto Sans Hebrew',
+  devanagari: 'Noto Sans Devanagari',
+  han: 'Noto Sans SC',
+  kana: 'Noto Sans JP',
+  hangul: 'Noto Sans KR',
+});
+
+/** The Fontsource subset that holds each script's glyphs. */
+const SCRIPT_SUBSET = Object.freeze({
+  arabic: 'arabic',
+  hebrew: 'hebrew',
+  devanagari: 'devanagari',
+  han: 'chinese-simplified',
+  kana: 'japanese',
+  hangul: 'korean',
+});
+
+/**
+ * Families a machine may already have that cover the script.
+ *
+ * These are the ones worth naming before anything is fetched: a font that is
+ * installed renders without a download, and without a network.
+ */
+const SYSTEM_ALTERNATIVES = Object.freeze({
+  han: [
+    'Noto Sans CJK SC', 'Noto Sans CJK JP', 'Source Han Sans SC', 'PingFang SC',
+    'Hiragino Sans GB', 'Hiragino Sans', 'Heiti SC', 'Microsoft YaHei', 'SimSun',
+    'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei',
+  ],
+  kana: [
+    'Noto Sans CJK JP', 'Hiragino Sans', 'Yu Gothic', 'Meiryo',
+    'Microsoft YaHei', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei',
+  ],
+  hangul: [
+    'Noto Sans CJK KR', 'Apple SD Gothic Neo', 'Malgun Gothic', 'NanumGothic',
+    'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei',
+  ],
+  arabic: ['Geeza Pro', 'Al Bayan', 'Baghdad', 'Damascus', 'Noto Sans Arabic'],
+  hebrew: ['Arial Hebrew', 'Noto Sans Hebrew'],
+  devanagari: ['Kohinoor Devanagari', 'Devanagari Sangam MN', 'Noto Sans Devanagari'],
+});
+
+/**
+ * The families that have to be fetched.
+ *
+ * A family outside this set is one the machine may already have, which is
+ * what the browser should try first.
+ */
+const OPEN_FAMILIES = new Set([
+  'Noto Sans Arabic', 'Noto Sans Hebrew', 'Noto Sans Devanagari',
+  'Noto Sans SC', 'Noto Sans JP', 'Noto Sans KR',
+]);
+
+/** The characters that decide which script a piece of text is written in. */
+const SCRIPT_RANGES = Object.freeze([
+  ['arabic', [[0x0600, 0x06ff], [0x0750, 0x077f], [0x08a0, 0x08ff], [0xfb50, 0xfdff], [0xfe70, 0xfeff]]],
+  ['hebrew', [[0x0590, 0x05ff], [0xfb1d, 0xfb4f]]],
+  ['devanagari', [[0x0900, 0x097f], [0xa8e0, 0xa8ff]]],
+  // Kana is checked before Han: the fullwidth block holds the halfwidth
+  // katakana, and a document written in Japanese would otherwise look
+  // Chinese.
+  ['kana', [[0x3040, 0x30ff], [0x31f0, 0x31ff], [0xff65, 0xff9f]]],
+  ['hangul', [[0xac00, 0xd7af], [0x1100, 0x11ff], [0x3130, 0x318f], [0xa960, 0xa97f], [0xd7b0, 0xd7ff], [0xffa0, 0xffdc]]],
+  ['han', [
+    [0x4e00, 0x9fff], [0x3400, 0x4dbf], [0xf900, 0xfaff], [0x20000, 0x3134f],
+    [0x2e80, 0x2fdf], [0x3000, 0x303f], [0xfe30, 0xfe4f], [0xff01, 0xff60],
+  ]],
+]);
+
+/**
+ * The script a character belongs to.
+ *
+ * Returns null for the Latin and other scripts the default stack covers.
+ */
+function canvasScriptOfChar(codePoint) {
+  for (const [script, ranges] of SCRIPT_RANGES) {
+    for (const [from, to] of ranges) {
+      if (codePoint >= from && codePoint <= to) return script;
+    }
+  }
+  return null;
+}
+
+/**
+ * The scripts a piece of text needs.
+ *
+ * A document can mix scripts: Chinese labels with an English heading. Every
+ * script that appears is reported, in the order the range table lists them.
+ */
+function canvasScriptsOf(text) {
+  const found = new Set();
+  for (const character of String(text || '')) {
+    const script = canvasScriptOfChar(character.codePointAt(0));
+    if (script) found.add(script);
+  }
+  return CANVAS_SCRIPTS.filter((script) => found.has(script));
+}
+
+/**
+ * The family names that cover a script, best first.
+ *
+ * A family the machine already has comes before the one that has to be
+ * fetched: the first that exists is the one the renderer will use.
+ */
+function canvasFontFamiliesFor(script) {
+  const open = SCRIPT_FAMILY[script];
+  if (!open) return [];
+  const system = SYSTEM_ALTERNATIVES[script] || [];
+  return [...new Set([...system, open])];
+}
+
+/**
+ * The Fontsource subset that holds a script's glyphs.
+ */
+function canvasFontSubsetFor(script) {
+  return SCRIPT_SUBSET[script] || null;
+}
+
+/**
+ * The font stack that renders a piece of text.
+ *
+ * The Latin stack stays first for the characters it covers, and the script
+ * that needs more comes after it: a font stack is a list, and the browser
+ * uses the first family that has the glyph.
+ *
+ * The list is kept short on purpose. A stack of fifteen families is a stack
+ * nobody can read, and every extra name is a lookup the browser does for
+ * every character: two installed fonts and one open family cover the same
+ * characters as fifteen names.
+ */
+function canvasFontStackFor(text, baseStack) {
+  const scripts = canvasScriptsOf(text);
+  if (!scripts.length) return baseStack;
+  const families = [];
+  for (const script of scripts) {
+    for (const family of canvasFontFamiliesFor(script)) {
+      if (!families.includes(family)) families.push(family);
+    }
+  }
+  // Two families are enough: the first one the machine already has, and the
+  // open family that can be fetched. The rest are duplicates that the browser
+  // would try in turn, and a stack of fifteen names is a stack nobody reads.
+  const installed = families.find((family) => !OPEN_FAMILIES.has(family));
+  const open = families.find((family) => OPEN_FAMILIES.has(family));
+  const chosen = [...new Set([installed, open].filter(Boolean))];
+  return [baseStack, ...chosen.map((family) => `"${family}"`)].join(', ');
+}
+
+/**
+ * Whether a piece of text needs a font beyond the default stack.
+ */
+function canvasNeedsFallbackFont(text) {
+  return canvasScriptsOf(text).length > 0;
+}
+
     function canvasBoundsOf(nodes) {
       if (!nodes.length) return null;
       let left = Infinity;
@@ -2848,7 +3426,10 @@ window.__ModuleLoader__.load({
       const fontOf = (node) => {
         const size = Number(node.fontSize) > 0 ? Number(node.fontSize) : 14;
         const weight = Number(node.fontWeight) > 0 ? Number(node.fontWeight) : 400;
-        const family = CANVAS_FONT_STACKS[node.fontFamily] || CANVAS_FONT_STACKS.sans;
+        const family = canvasFontStackFor(
+          canvasNodeTextOf(node),
+          CANVAS_FONT_STACKS[node.fontFamily] || CANVAS_FONT_STACKS.sans,
+        );
         return { size, weight, family, css: `${weight} ${size}px ${family}` };
       };
       const wrapLines = (node, text) => {
@@ -2928,7 +3509,7 @@ window.__ModuleLoader__.load({
       const ordered = [...nodes].sort((left, right) => depth(left) - depth(right));
 
       for (const node of ordered) {
-        const target = CANVAS_CONTAINER_TYPES.has(node.type) ? containerBody : leafBody;
+        const target = CANVAS_COMMAND_CONTAINERS.has(node.type) ? containerBody : leafBody;
         if (node.visible === false) continue;
         const x = num(node.x + offset.x);
         const y = num(node.y + offset.y);
@@ -3002,7 +3583,6 @@ window.__ModuleLoader__.load({
     }
 
     /** The container types whose box is a surface for what they hold. */
-    const CANVAS_CONTAINER_TYPES = new Set(['frame', 'group', 'component']);
 
     /** How far the text sits from the edge of its box, as the canvas pads it. */
     function canvasTextInset(node) {
@@ -3324,8 +3904,13 @@ window.__ModuleLoader__.load({
         const next = typeof updater === 'function' ? updater(current) : updater;
         if (!next) return;
         if (options.history) {
-          setHistory((items) => [...items, { nodes: current.nodes, edges: current.edges }].slice(-CANVAS_HISTORY_LIMIT));
-          setFuture([]);
+          // The change is the difference between the two states, expressed as
+          // commands: undoing it applies their inverses.
+          const commands = canvasDiffCommands(current.nodes, next.nodes || []);
+          if (commands.length) {
+            setHistory((items) => [...items, { nodes: current.nodes, edges: current.edges, commands }].slice(-CANVAS_HISTORY_LIMIT));
+            setFuture([]);
+          }
         }
         docRef.current = next;
         setDoc(next);
@@ -3391,15 +3976,25 @@ window.__ModuleLoader__.load({
         saveTimerRef.current = setTimeout(() => { void saveNow(); }, CANVAS_SAVE_DELAY);
       }, [activeId, saveNow]);
 
+      // The stack holds what changed, not a copy of the board: an edit is a
+      // command, and undoing it applies the inverse of that command. A board
+      // of any size costs the same to undo.
       const undo = useCallback(() => {
         const current = docRef.current;
         if (!current || !history.length) return;
         const previous = history[history.length - 1];
         setHistory(history.slice(0, -1));
-        setFuture((items) => [...items, { nodes: current.nodes, edges: current.edges }].slice(-CANVAS_HISTORY_LIMIT));
-        const restored = { ...current, nodes: previous.nodes, edges: previous.edges };
+        setFuture((items) => [...items, { nodes: current.nodes, edges: current.edges, commands: previous.commands }].slice(-CANVAS_HISTORY_LIMIT));
+        const restored = {
+          ...current,
+          nodes: canvasApplyCommands(current.nodes, previous.commands.map(canvasInvertCommand).reverse()),
+        };
         docRef.current = restored;
         setDoc(restored);
+        // The board on disk has to follow the board on screen: an undo that
+        // only changes the picture leaves the file holding the change that was
+        // just taken back.
+        scheduleSaveRef.current?.();
       }, [history]);
 
       const redo = useCallback(() => {
@@ -3407,10 +4002,16 @@ window.__ModuleLoader__.load({
         if (!current || !future.length) return;
         const next = future[future.length - 1];
         setFuture(future.slice(0, -1));
-        setHistory((items) => [...items, { nodes: current.nodes, edges: current.edges }].slice(-CANVAS_HISTORY_LIMIT));
-        const restored = { ...current, nodes: next.nodes, edges: next.edges };
+        // The redo entry carries the commands that were undone, so the stack
+        // stays a stack of changes rather than a stack of board copies.
+        setHistory((items) => [...items, { nodes: current.nodes, edges: current.edges, commands: next.commands }].slice(-CANVAS_HISTORY_LIMIT));
+        const restored = {
+          ...current,
+          nodes: canvasApplyCommands(current.nodes, next.commands),
+        };
         docRef.current = restored;
         setDoc(restored);
+        scheduleSaveRef.current?.();
       }, [future]);
 
       const selectNodes = useCallback((ids, additive = false) => {
@@ -4096,8 +4697,11 @@ window.__ModuleLoader__.load({
             // selection would drop every other node from the document.
             const before = new Map(gesture.snapshot.map((item) => [item.id, item]));
             const nodes = (gesture.before || docRef.current?.nodes || []).map((node) => before.get(node.id) || node);
-            setHistory((items) => [...items, { nodes, edges: docRef.current?.edges || [] }].slice(-CANVAS_HISTORY_LIMIT));
-            setFuture([]);
+            const commands = canvasDiffCommands(nodes, docRef.current?.nodes || []);
+            if (commands.length) {
+              setHistory((items) => [...items, { nodes, edges: docRef.current?.edges || [], commands }].slice(-CANVAS_HISTORY_LIMIT));
+              setFuture([]);
+            }
           }
           // A second tap that did not turn into a drag opens the text.
           const pending = pendingEditRef.current;
@@ -4107,11 +4711,16 @@ window.__ModuleLoader__.load({
         }
         if (gesture.mode === 'anchor' || gesture.mode === 'handle') {
           if (gesture.moved) {
-            setHistory((items) => [...items, {
-              nodes: gesture.before || docRef.current?.nodes || [],
-              edges: docRef.current?.edges || [],
-            }].slice(-CANVAS_HISTORY_LIMIT));
-            setFuture([]);
+            const nodes = gesture.before || docRef.current?.nodes || [];
+            const commands = canvasDiffCommands(nodes, docRef.current?.nodes || []);
+            if (commands.length) {
+              setHistory((items) => [...items, {
+                nodes,
+                edges: docRef.current?.edges || [],
+                commands,
+              }].slice(-CANVAS_HISTORY_LIMIT));
+              setFuture([]);
+            }
           }
           return;
         }
@@ -5337,6 +5946,13 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /** The size of a resize handle on screen, in pixels. */
+    const HANDLE_SIZE = 8;
+    /** The widest a handle's hit area may reach. */
+    const HANDLE_HIT_MAX = 9;
+    /** The narrowest a handle's hit area may be. */
+    const HANDLE_HIT_MIN = 1;
+
     /**
      * Which corner of the selection a press meant, in screen pixels.
      *
@@ -5370,10 +5986,6 @@ window.__ModuleLoader__.load({
         .sort((left, right) => left.distance - right.distance)[0].id;
     }
 
-    const HANDLE_SIZE = 8;
-    const HANDLE_HIT_MAX = 9;
-    const HANDLE_HIT_MIN = 1;
-
     /**
      * How far a resize handle's hit area may reach.
      *
@@ -5399,7 +6011,9 @@ window.__ModuleLoader__.load({
           const ink = canvasInkOnFill(fillBehind.get(node.id) || node.fill);
           if (ink) style.color = ink;
         }
-        if (node.fontFamily && CANVAS_FONT_STACKS[node.fontFamily]) style.fontFamily = CANVAS_FONT_STACKS[node.fontFamily];
+        if (node.fontFamily && CANVAS_FONT_STACKS[node.fontFamily]) {
+          style.fontFamily = canvasFontStackFor(canvasNodeTextOf(node), CANVAS_FONT_STACKS[node.fontFamily]);
+        }
         if (node.fontWeight) style.fontWeight = String(node.fontWeight);
         // 1.25 is the same default the SVG and HTML exporters use, so the
         // canvas and the handoff file break their lines at the same place.
