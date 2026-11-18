@@ -4,3 +4,7 @@ plugin/native/bin/
 node_modules/
 .DS_Store
 *.log
+
+# Same-name copies left behind by file sync ("name 2.ext"); the originals are tracked.
+**/* 2.*
+**/* 2
