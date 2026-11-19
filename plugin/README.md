@@ -37,7 +37,7 @@ Moments is a local notes workspace for capturing ideas and rediscovering them in
 - **坐标与撤销**：坐标域 ±1,000,000 px、缩放 0.05×–4×，坐标越界**夹住**而不是拒绝保存（NaN/Infinity 才拒绝——那是文档损坏，不是位置远）；撤销栈记录的是**完整文档**，拖动一个节点再撤销，其余节点一个都不会少。
 - **双击编辑**：双击便签 / 文本 / 形状即进入编辑，`⌘/Ctrl + Enter` 提交、`Esc` 取消、失焦也提交。画布的指针捕获会把 `click`/`dblclick` 重定向到画布本身，所以双击是**从两次按下自己判定**的（同节点、无修饰键、第一次未拖动），判定窗口 1200ms 且用事件时间戳计时。
 - **拖动容器**：**frame 是一块面**——按它内部任意位置即可选中并拖动，成员跟着走；**group 是一圈虚线**——只有边缘可抓，内部仍是透过它操作下面的内容。空 frame 同样可以拖动。
-- **侧栏折叠**：Notes 侧栏标题右侧的 « 按钮把左栏收成 56px 的**图标栏**——Moments 标记 + 展开箭头，下面是全部五个入口（全部笔记 / PinNotes / 每日回顾 / 画布 / 回收站）收成的 32×32 图标键，名称在 `title` 与 `aria-label` 里；选中项带 ember 底色与左侧指示条。标签树、图层树和页脚在折叠时隐藏（56px 放不下）。再点展开恢复完整侧栏；状态记在 `localStorage`，刷新后保持。画布需要横向空间时很有用。
+- **侧栏折叠**：Notes 侧栏标题右侧的 « 按钮把左栏收成 56px 的**图标栏**——Moments 标记 + 展开箭头，下面是全部五个入口（全部笔记 / PinNotes / 每日回顾 / 画布 / 回收站）收成的 32×32 图标键，名称在 `title` 与 `aria-label` 里；五个入口各有一枚按 16px 光学尺寸重画的线性图标（纸页 / 书签 / 时钟 / 画板 / 回收桶，同一笔画与圆角）；选中项带中性底色与左侧 2px ember 指示条。标签树、图层树和页脚在折叠时隐藏（56px 放不下）。再点展开恢复完整侧栏；状态记在 `localStorage`，刷新后保持。画布需要横向空间时很有用。
 - **入口**：切到画布模式后，标题栏中间的搜索框换成操作提示（Drag to pan · ⌘ + scroll to zoom · V select · N sticky note · C connector）。
 - **画布顶栏（一条 44px）**：分三个区——左侧**画板切换器**（你现在在看哪块画板，唯一的一级信息）、中间**工具栏**（选择/手/便签/文本/画框/矩形/椭圆/图片/连线 + 撤销重做，视觉重心）、右侧**保存状态点 + ⋯ 菜单**。低频操作全部收进菜单：New / Rename / Delete board、**铺开**（带来源选择）、**导出**（SVG / PNG），不再占用常驻空间。保存状态从一整句话降为一个点——灰=已保存、琥珀脉冲=保存中、绿=已保存、红=失败，文字留在 `title` 和读屏里。
 - **画板**：一个工作区可以有多块画板（board）。当前画板 id 记在 `localStorage` 的 `moments-notes:canvas-active`，画板不存在时回落到列表第一个。
@@ -128,7 +128,7 @@ Design 不只是给人画的画布：Agent 通过四个工具写**同一份**场
 
 页面本身开不出系统窗口：Harness 桌面外壳对所有 `window.open` 返回 `deny`。所以桌面浮窗不是网页浮层，而是 Host 拉起的原生进程：
 
-- `native/MomentsFloat.swift`：AppKit/SwiftUI 的 accessory 应用，`NSWindow` 用 `.floating` 层级、`canJoinAllSpaces` + `fullScreenAuxiliary` 行为，无边框透明窗口里画一张圆角卡片，可拖动、可缩放，关闭即退出。卡片用发丝描边 + 收紧的阴影：阴影必须完整落在透明窗口内，否则会被系统裁成一个生硬的灰方块。配色全部用系统语义色（`separatorColor`、`textBackgroundColor`、`controlAccentColor`），因此跟随系统深浅色。头部右侧的 **✕** 和展开/折叠都是普通 SwiftUI 按钮；拖动手势放在头部底层的透明层上，永远不会盖住按钮。
+- `native/MomentsFloat.swift`：AppKit/SwiftUI 的 accessory 应用，`NSWindow` 用 `.floating` 层级、`canJoinAllSpaces` + `fullScreenAuxiliary` 行为，无边框透明窗口里画一张圆角卡片，关闭即退出。卡片用发丝描边 + 收紧的阴影：阴影必须完整落在透明窗口内，否则会被系统裁成一个生硬的灰方块。配色全部用系统语义色（`separatorColor`、`textBackgroundColor`、`controlAccentColor`），因此跟随系统深浅色。头部右侧的 **✕** 和展开/折叠都是普通 SwiftUI 按钮；拖动由头部底层的透明层交给 `performDrag`，永远不会盖住按钮。缩放由 `FloatResizeRing` 负责：卡片边缘 10pt 内可拖，右下角有 grip，上边缘留给拖动窗口；尺寸按折叠 / 展开两种形态各自记在 `UserDefaults` 里，最小 360×300。工具行按可用宽度折行规则取舍：窄了把列表按钮收进格式菜单，再窄把 Cancel 变图标，标签始终单行。
 - `native/build.sh`：编译 `native/bin/moments-float`。脚本自己找编译器和 SDK，因此在 Xcode 许可未同意（`xcrun` 不可用）时也能编译。
 - `lib/desktop-float.js`：Host 侧进程管理，按 JSONL 与窗口通信。
 - `lib/float-bridge.js`：窗口与仓储之间的桥——窗口发 `query`（带搜索词），Host 用同一个仓储过滤后回 `notes`；窗口回传 `create` / `update` / `trash` / `pin`；仓储每次写入（包括 `moments_memo` 工具写入）都会刷新窗口里的列表。

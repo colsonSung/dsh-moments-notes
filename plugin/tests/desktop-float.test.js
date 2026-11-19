@@ -174,7 +174,7 @@ test('the native helper passes its own self-test', { skip: existsSync(binaryPath
   assert.match(output, /self-test: \d+ checks passed/);
 });
 
-test('the native header is dragged from AppKit\'s own event stream, behind the controls', () => {
+test('the native header hands its drag to the window server, behind the controls', () => {
   const source = readFileSync(swiftPath, 'utf8');
   const header = source.slice(source.indexOf('private var header'), source.indexOf('private var searchField'));
   assert.ok(header.length > 0, 'the header view exists');
@@ -184,9 +184,37 @@ test('the native header is dragged from AppKit\'s own event stream, behind the c
   assert.ok(controlsIndex > dragIndex, 'the drag surface is declared first, so it never sits above the controls');
   assert.match(header, /iconButton\("xmark", label: "Close the float", action: onClose\)/, 'the close button is a real button');
   assert.doesNotMatch(header, /\.dragGesture|\.gesture\(\s*DragGesture/, 'no SwiftUI gesture steers the window frame');
-  assert.match(source, /NSEvent\.addLocalMonitorForEvents\(matching: \[\.leftMouseDragged, \.leftMouseUp\]/, 'the window follows AppKit\'s drag events one for one');
-  assert.match(source, /window\.setFrameOrigin\(NSPoint\(/, 'each event moves the frame');
-  assert.doesNotMatch(source, /WindowDragger/, 'the hand-rolled SwiftUI gesture dragging is gone');
+  assert.match(source, /window\?\.performDrag\(with: event\)/, 'the drag runs in the window server, not through app layout');
+  assert.doesNotMatch(source, /addLocalMonitorForEvents\(matching: \[\.leftMouseDragged/, 'no per-event frame arithmetic is left');
+  assert.match(source, /override func acceptsFirstMouse\(for event: NSEvent\?\) -> Bool \{ true \}/,
+    'a float behind another app starts moving on the first click');
+});
+
+test('the native window is resized by its own ring and remembers the size', () => {
+  const source = readFileSync(swiftPath, 'utf8');
+  assert.match(source, /final class FloatResizeRing: NSView/, 'the resize ring exists');
+  assert.match(source, /override func hitTest\(_ point: NSPoint\) -> NSView\?/, 'the ring only takes the mouse on its own edges');
+  assert.match(source, /override func resetCursorRects\(\)/, 'the edges show a resize cursor');
+  assert.match(source, /FloatFrame\.resized\(/, 'the drag becomes a frame');
+  assert.match(source, /container\.addSubview\(ring\)/, 'the ring sits above the hosting view, which does its own hit testing');
+  assert.match(source, /windowDidResize/, 'a dragged size is noticed');
+  assert.match(source, /UserDefaults\(suiteName: "com\.moments\.float"\)/, 'the size is remembered between runs');
+  assert.match(source, /static let compactMin = NSSize\(width: 360, height: 300\)/, 'the compact card keeps a usable minimum');
+  assert.match(source, /styleMask: \[\.borderless, \.fullSizeContentView\]/, 'the window owns its resizing rather than the frame');
+  const header = source.slice(source.indexOf('private var header'), source.indexOf('private var searchField'));
+  assert.doesNotMatch(header, /WindowResizeArea/, 'resizing is not a SwiftUI overlay the hosting view would swallow');
+});
+
+test('the native tool row folds instead of wrapping its labels', () => {
+  const source = readFileSync(swiftPath, 'utf8');
+  const toolbar = source.slice(source.indexOf('private func toolbarRow'), source.indexOf('private var imageMenu'));
+  assert.ok(toolbar.length > 0, 'the tool row is built from a measured width');
+  assert.match(toolbar, /FloatLayout\.showsListButtons\(rowWidth: rowWidth\)/, 'the list buttons fold away when the card is narrow');
+  assert.match(toolbar, /FloatLayout\.showsLabels\(rowWidth: rowWidth\)/, 'the labels have a width policy');
+  assert.match(toolbar, /\.lineLimit\(1\)/, 'a label is never allowed onto a second line');
+  assert.match(toolbar, /\.fixedSize\(\)/, 'a label keeps its width instead of being squeezed');
+  assert.match(source, /Button\("Bullet list"\) \{ model\.prefixLine\("- "\) \}/, 'the folded list commands stay in the format menu');
+  assert.match(source, /GeometryReader \{ proxy in/, 'the row measures the card before folding');
 });
 
 test('the native composer attaches images from the clipboard, disk and drops', () => {

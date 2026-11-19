@@ -824,12 +824,12 @@ struct MomentsMarkView: View {
 
 /// The surface that moves the window.
 ///
-/// Steering the frame from a SwiftUI gesture (`setFrameOrigin` on every
-/// `onChanged`) makes the card trail the pointer: the gesture layer coalesces
-/// and drops events, so the window arrives late and ends a few points away from
-/// where the pointer stopped. This view listens to AppKit's own drag events
-/// instead, which arrive one for one, so the card stays exactly under the
-/// pointer.
+/// Steering the frame by hand — a SwiftUI gesture, or `setFrameOrigin` on every
+/// dragged event — routes each move through this app's layout: the card trails
+/// the pointer, and when an event is coalesced or dropped it stops a few points
+/// away from where the pointer was released. `performDrag` hands the drag to the
+/// window server instead: the window moves in the compositor, one move per
+/// pointer move, with no relayout per frame and no event that can be missed.
 ///
 /// The view sits **behind** the header content in its ZStack, so the close and
 /// shape buttons and the expanded search field keep every one of their clicks.
@@ -839,52 +839,225 @@ struct WindowDragArea: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     final class DragAreaView: NSView {
-        private var monitor: Any?
-        private var grabOrigin: NSPoint?
-        private var windowOrigin: NSPoint?
+        /// A float that is not the active app still starts the drag on the first
+        /// click. Without this the click only activates the window, and the card
+        /// feels stuck until the pointer is pressed a second time.
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-        /// Track the drag from AppKit's own event stream.
-        ///
-        /// A SwiftUI gesture delivers `onChanged` late and in bursts, so the
-        /// frame it sets is always a step or three behind the pointer. The
-        /// events a view gets while the button is held are not coalesced, so
-        /// every one of them moves the window by exactly the distance the
-        /// pointer travelled.
         override func mouseDown(with event: NSEvent) {
-            guard let window else { return }
-            // A lost mouse-up must never leave a second monitor behind.
-            endDrag()
-            grabOrigin = NSEvent.mouseLocation
-            windowOrigin = window.frame.origin
-            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged, .leftMouseUp]) { [weak self] dragged in
-                guard let self else { return dragged }
-                if dragged.type == .leftMouseUp {
-                    self.endDrag()
-                    return dragged
-                }
-                guard let grabOrigin = self.grabOrigin, let windowOrigin = self.windowOrigin,
-                      let window = self.window else { return dragged }
-                let mouse = NSEvent.mouseLocation
-                window.setFrameOrigin(NSPoint(
-                    x: windowOrigin.x + (mouse.x - grabOrigin.x),
-                    y: windowOrigin.y + (mouse.y - grabOrigin.y)
-                ))
-                return dragged
-            }
+            window?.performDrag(with: event)
         }
-
-        private func endDrag() {
-            if let monitor { NSEvent.removeMonitor(monitor) }
-            monitor = nil
-            grabOrigin = nil
-            windowOrigin = nil
-        }
-
-        deinit { endDrag() }
 
         /// The drag is started explicitly above, never by the window.
         override var mouseDownCanMoveWindow: Bool { false }
     }
+}
+
+// MARK: - Window metrics
+
+/// The measurements the card and the window agree on.
+enum FloatMetrics {
+    /// The transparent ring the card keeps for its shadow. The window's own
+    /// edges are the resize ring, so a drag there never lands on a control.
+    static let shadowInset: CGFloat = 18
+    /// The room the toolbar keeps free on both sides.
+    static let toolbarInset: CGFloat = 18
+    /// The margin the corner grip keeps from the window edge: just inside the
+    /// card's own corner, where the resize ring can see the mouse.
+    static let gripInset: CGFloat = 22
+    /// The header's height. The header is the surface that moves the window, so
+    /// the resize ring stays out of it.
+    static let headerHeight: CGFloat = 52
+
+    static let compactMin = NSSize(width: 360, height: 300)
+    static let expandedMin = NSSize(width: 640, height: 420)
+    static let compactDefault = NSSize(width: 420, height: 430)
+    static let expandedDefault = NSSize(width: 760, height: 620)
+}
+
+/// How the composer tool row folds as the card narrows. Kept as numbers so the
+/// self-test can check the thresholds without a window.
+enum FloatLayout {
+    static let spacing: CGFloat = 10
+    static let rowPadding: CGFloat = 2 * FloatMetrics.toolbarInset + 2 * FloatMetrics.shadowInset
+
+    /// The width the tool row can use in a window of this width.
+    static func rowWidth(windowWidth: CGFloat) -> CGFloat {
+        max(0, windowWidth - rowPadding)
+    }
+
+    /// The two list buttons come out of the row below this width; they stay in
+    /// the format menu, so nothing is unreachable.
+    static func showsListButtons(rowWidth: CGFloat) -> Bool { rowWidth >= 330 }
+
+    /// Below this width the cancel button becomes a glyph and the draft count
+    /// steps aside, so no label ever has to wrap. The narrowest window still
+    /// clears it, which keeps the labels on screen at every size the card can be
+    /// dragged to.
+    static func showsLabels(rowWidth: CGFloat) -> Bool { rowWidth >= 270 }
+}
+
+enum ResizeEdge {
+    case left, right, top, bottom, topLeft, topRight, bottomLeft, bottomRight
+}
+
+/// The arithmetic behind a resize drag, kept pure so the self-test can check
+/// every edge without opening a window.
+enum FloatFrame {
+    static func resized(_ frame: NSRect, edge: ResizeEdge, delta: NSPoint, minSize: NSSize) -> NSRect {
+        var result = frame
+        let minWidth = max(0, minSize.width)
+        let minHeight = max(0, minSize.height)
+
+        func widthFromRight() { result.size.width = max(minWidth, frame.width + delta.x) }
+        func widthFromLeft() {
+            let width = max(minWidth, frame.width - delta.x)
+            result.origin.x = frame.maxX - width
+            result.size.width = width
+        }
+        func heightFromTop() { result.size.height = max(minHeight, frame.height + delta.y) }
+        func heightFromBottom() {
+            let height = max(minHeight, frame.height - delta.y)
+            result.origin.y = frame.maxY - height
+            result.size.height = height
+        }
+
+        switch edge {
+        case .right: widthFromRight()
+        case .left: widthFromLeft()
+        case .top: heightFromTop()
+        case .bottom: heightFromBottom()
+        case .topRight: widthFromRight(); heightFromTop()
+        case .topLeft: widthFromLeft(); heightFromTop()
+        case .bottomRight: widthFromRight(); heightFromBottom()
+        case .bottomLeft: widthFromLeft(); heightFromBottom()
+        }
+        return result
+    }
+}
+
+/// The window's resize ring.
+///
+/// A borderless window has no edge to grab: the card floats in a transparent
+/// margin, so nothing tells the pointer that the frame can be dragged. This
+/// view takes the mouse within ten points of the card's edge, shows the resize
+/// cursor there and turns the drag into a frame change. The bottom corners are
+/// wider, so the grip the card draws is inside them; the top edge is left to
+/// the header, which is the surface that moves the window.
+///
+/// It is added to the window's content view directly rather than through
+/// SwiftUI: the transparent margin never receives the mouse, and a hosting view
+/// does its own hit testing, so neither a ring in the margin nor an overlay
+/// above it would work.
+final class FloatResizeRing: NSView {
+    var minSize: NSSize
+
+    /// How far inside the window edge a drag starts a resize.
+    private static let band: CGFloat = 10
+    /// The corner squares, wider so the drawn grip is inside them.
+    private static let corner: CGFloat = 24
+
+    private var grab: NSPoint?
+    private var startFrame: NSRect = .zero
+    private var edge: ResizeEdge = .bottomRight
+
+    init(minSize: NSSize) {
+        self.minSize = minSize
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// Only the ring answers the mouse; everything inside the card keeps
+    /// its own clicks.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let superview else { return nil }
+        return edge(at: convert(point, from: superview)) == nil ? nil : self
+    }
+
+    /// The card's own rect: the shadow margin around it is transparent, and a
+    /// transparent part of a window never receives the mouse, so the ring lives
+    /// just inside the card's edge.
+    private var cardRect: NSRect {
+        bounds.insetBy(dx: FloatMetrics.shadowInset, dy: FloatMetrics.shadowInset)
+    }
+
+    /// Where a point sits on the ring, or nil for everything else.
+    ///
+    /// The top edge and the header belong to the window drag, so the ring never
+    /// answers there: a resize zone over the header would swallow the drag the
+    /// header exists for.
+    private func edge(at point: NSPoint) -> ResizeEdge? {
+        let card = cardRect
+        guard card.contains(point) else { return nil }
+        let nearBottom = point.y <= card.minY + Self.corner
+        if nearBottom && point.x <= card.minX + Self.corner { return .bottomLeft }
+        if nearBottom && point.x >= card.maxX - Self.corner { return .bottomRight }
+        if point.y <= card.minY + Self.band { return .bottom }
+        guard point.y <= card.maxY - FloatMetrics.headerHeight else { return nil }
+        if point.x <= card.minX + Self.band { return .left }
+        if point.x >= card.maxX - Self.band { return .right }
+        return nil
+    }
+
+    override func resetCursorRects() {
+        let card = cardRect
+        let band = Self.band
+        let corner = Self.corner
+        let sidesTop = card.maxY - FloatMetrics.headerHeight
+        addCursorRect(NSRect(x: card.minX + band, y: card.minY, width: max(0, card.width - 2 * band), height: band), cursor: .resizeUpDown)
+        addCursorRect(NSRect(x: card.minX, y: card.minY + band, width: band, height: max(0, sidesTop - card.minY - band)), cursor: .resizeLeftRight)
+        addCursorRect(NSRect(x: card.maxX - band, y: card.minY + band, width: band, height: max(0, sidesTop - card.minY - band)), cursor: .resizeLeftRight)
+        addCursorRect(NSRect(x: card.minX, y: card.minY, width: corner, height: corner), cursor: Self.cornerCursor(.bottomLeft))
+        addCursorRect(NSRect(x: card.maxX - corner, y: card.minY, width: corner, height: corner), cursor: Self.cornerCursor(.bottomRight))
+    }
+
+    /// A diagonal cursor where the system has one, otherwise the nearest
+    /// straight one, so the corner still reads as draggable on macOS 13.
+    private static func cornerCursor(_ edge: ResizeEdge) -> NSCursor {
+        if #available(macOS 15.0, *) {
+            switch edge {
+            case .bottomLeft:
+                return NSCursor.frameResize(position: .bottomLeft, directions: .all)
+            default:
+                return NSCursor.frameResize(position: .bottomRight, directions: .all)
+            }
+        }
+        return .resizeUpDown
+    }
+
+    /// The float lives over other apps, so the surface that resizes it has to
+    /// take the first click: without this the click only activates the window
+    /// and the corner feels dead until it is pressed twice.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        if let candidate = edge(at: convert(event.locationInWindow, from: nil)) {
+            edge = candidate
+        }
+        grab = NSEvent.mouseLocation
+        startFrame = window.frame
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window, let grab else { return }
+        let mouse = NSEvent.mouseLocation
+        let target = FloatFrame.resized(
+            startFrame,
+            edge: edge,
+            delta: NSPoint(x: mouse.x - grab.x, y: mouse.y - grab.y),
+            minSize: minSize
+        )
+        window.setFrame(target, display: true)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        grab = nil
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 // MARK: - Views
@@ -920,14 +1093,30 @@ struct FloatRootView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .padding(18)
-        .frame(minWidth: expanded ? 640 : 340)
+        .padding(FloatMetrics.shadowInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottomTrailing) { resizeGrip.padding(FloatMetrics.gripInset) }
         .animation(.easeInOut(duration: 0.22), value: expanded)
         .overlay(dropRing)
         .onDrop(of: [UTType.fileURL, UTType.image], isTargeted: $isDropTarget) { providers in
             model.acceptDrop(providers)
             return true
         }
+    }
+
+    /// Two strokes in the corner the pointer can grab, so the card says it can
+    /// be resized before the pointer finds the edge. Only a sign: the drag
+    /// itself belongs to the window's resize ring.
+    private var resizeGrip: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 0, y: 10))
+            path.addLine(to: CGPoint(x: 10, y: 0))
+            path.move(to: CGPoint(x: 4, y: 10))
+            path.addLine(to: CGPoint(x: 10, y: 4))
+        }
+        .stroke(Palette.secondary.opacity(0.5), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+        .frame(width: 10, height: 10)
+        .allowsHitTesting(false)
     }
 
     /// A thin accent ring while an image hovers the card, so the drop has an
@@ -976,7 +1165,7 @@ struct FloatRootView: View {
             }
             .padding(.horizontal, 18)
         }
-        .frame(height: 52)
+        .frame(height: FloatMetrics.headerHeight)
     }
 
     private var searchField: some View {
@@ -1137,28 +1326,63 @@ struct FloatRootView: View {
     }
 
     /// The Harness composer tool row: tags, images, formats and send.
+    ///
+    /// The row is measured, not guessed. A card narrow enough for the two list
+    /// buttons to crowd it drops them — they stay in the format menu — and a
+    /// card narrower still turns Cancel into a glyph and puts the draft count
+    /// away. The labels never wrap, and the send button never leaves the card.
     private var toolbar: some View {
-        HStack(spacing: 12) {
+        GeometryReader { proxy in
+            toolbarRow(rowWidth: proxy.size.width)
+        }
+        .frame(height: 28)
+        .padding(.horizontal, FloatMetrics.toolbarInset)
+        .padding(.bottom, 14)
+    }
+
+    @ViewBuilder
+    private func toolbarRow(rowWidth: CGFloat) -> some View {
+        let showsLists = FloatLayout.showsListButtons(rowWidth: rowWidth)
+        let showsLabels = FloatLayout.showsLabels(rowWidth: rowWidth)
+        HStack(spacing: FloatLayout.spacing) {
             textToolButton("#", label: "Insert a tag") { model.insertText("#") }
             imageMenu
-            Rectangle().fill(Palette.hairline).frame(width: 1, height: 18)
+            if showsLists {
+                Rectangle().fill(Palette.hairline).frame(width: 1, height: 18)
+            }
             formatMenu
-            toolButton("list.bullet", label: "Bullet list") { model.prefixLine("- ") }
-            toolButton("list.number", label: "Numbered list") { model.prefixLine("1. ") }
+            if showsLists {
+                toolButton("list.bullet", label: "Bullet list") { model.prefixLine("- ") }
+                toolButton("list.number", label: "Numbered list") { model.prefixLine("1. ") }
+            }
             Spacer(minLength: 8)
             if model.isEditing {
-                Button("Cancel") { model.cancelEdit() }
+                if showsLabels {
+                    Button {
+                        model.cancelEdit()
+                    } label: {
+                        Text("Cancel")
+                            .font(.system(size: 11))
+                            .foregroundColor(Palette.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
                     .buttonStyle(.plain)
+                    .help("Stop editing this note")
+                } else {
+                    toolButton("xmark", label: "Stop editing this note") { model.cancelEdit() }
+                }
+            }
+            if showsLabels {
+                Text("Draft · \(model.content.count)")
                     .font(.system(size: 11))
                     .foregroundColor(Palette.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            Text("Draft · \(model.content.count)")
-                .font(.system(size: 11))
-                .foregroundColor(Palette.secondary)
             sendButton
         }
-        .padding(.horizontal, 18)
-        .padding(.bottom, 14)
+        .frame(height: 28)
     }
 
     /// The two ways to bring an image in: a file from disk or the clipboard.
@@ -1178,7 +1402,8 @@ struct FloatRootView: View {
         .help("Attach an image")
     }
 
-    private var formatMenu: some View {        Menu {
+    private var formatMenu: some View {
+        Menu {
             Button("Bold") { model.wrapSelection("**") }
             Button("Italic") { model.wrapSelection("*") }
             Button("Strikethrough") { model.wrapSelection("~~") }
@@ -1187,6 +1412,11 @@ struct FloatRootView: View {
             Button("Heading") { model.prefixLine("## ") }
             Button("Quote") { model.prefixLine("> ") }
             Button("Link") { model.insertText("[](https://)") }
+            Divider()
+            // The two list buttons leave the row when the card is narrow; the
+            // menu is where they stay reachable.
+            Button("Bullet list") { model.prefixLine("- ") }
+            Button("Numbered list") { model.prefixLine("1. ") }
         } label: {
             Image(systemName: "textformat")
                 .font(.system(size: 14))
@@ -1328,16 +1558,37 @@ final class FloatAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     private var signalSources: [DispatchSourceSignal] = []
     private var isTerminating = false
 
-    private static let compactSize = NSSize(width: 400, height: 430)
-    private static let expandedSize = NSSize(width: 760, height: 620)
+    /// The size the card was left at, per shape. A float that is resized once
+    /// should reopen at that size, and the two shapes keep their own.
+    private var compactSize = FloatMetrics.compactDefault
+    private var expandedSize = FloatMetrics.expandedDefault
+    /// True while the app itself is setting the frame, so the animation's
+    /// intermediate sizes are not mistaken for a choice.
+    private var applyingFrame = false
+    private var sizeSave: DispatchWorkItem?
+    private var resizeRing: FloatResizeRing?
+    /// A size asked for on the command line is a check, not a preference: it is
+    /// never written back while it is in force.
+    fileprivate var forcedSize: NSSize?
+
+    private static let sizeDefaults = UserDefaults(suiteName: "com.moments.float") ?? .standard
+    private static let compactWidthKey = "compactWidth"
+    private static let compactHeightKey = "compactHeight"
+    private static let expandedWidthKey = "expandedWidth"
+    private static let expandedHeightKey = "expandedHeight"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        loadWindowSizes()
         let window = FloatWindow(
-            contentRect: NSRect(origin: .zero, size: FloatAppDelegate.compactSize),
-            styleMask: [.borderless, .resizable, .fullSizeContentView],
+            contentRect: NSRect(origin: .zero, size: forcedSize ?? compactSize),
+            // The window is resized by the ring, not by the frame: a borderless
+            // window has no border to grab, and asking AppKit to resize one only
+            // takes the outer points away from the ring.
+            styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        window.minSize = FloatMetrics.compactMin
         window.title = "Moments"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -1352,7 +1603,21 @@ final class FloatAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         window.hasShadow = false
         window.delegate = self
         let root = FloatRootView(model: model) { [weak self] in self?.requestTermination() }
-        window.contentView = NSHostingView(rootView: root)
+        let host = NSHostingView(rootView: root)
+        host.autoresizingMask = [.width, .height]
+        // The ring is a sibling above the hosting view, not a SwiftUI overlay:
+        // a hosting view does its own hit testing and never offers a point to a
+        // representable the SwiftUI side has no view for.
+        let container = NSView()
+        container.autoresizingMask = [.width, .height]
+        window.contentView = container
+        host.frame = container.bounds
+        container.addSubview(host)
+        let ring = FloatResizeRing(minSize: FloatMetrics.compactMin)
+        ring.autoresizingMask = [.width, .height]
+        ring.frame = container.bounds
+        container.addSubview(ring)
+        resizeRing = ring
         window.center()
         window.makeKeyAndOrderFront(nil)
         self.window = window
@@ -1368,17 +1633,79 @@ final class FloatAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         FloatChannel.send(["type": "ready"])
     }
 
-    /// Grow or shrink the window while keeping its top left corner in place.
+    /// Switch to the other shape at the size that shape was left at, keeping
+    /// the top left corner in place. A size the person dragged is never
+    /// replaced by the default one.
     private func resize(expanded: Bool) {
         guard let window else { return }
-        let size = expanded ? FloatAppDelegate.expandedSize : FloatAppDelegate.compactSize
+        let minimum = expanded ? FloatMetrics.expandedMin : FloatMetrics.compactMin
+        let remembered = expanded ? expandedSize : compactSize
+        var size = NSSize(
+            width: max(minimum.width, remembered.width),
+            height: max(minimum.height, remembered.height)
+        )
+        if let visible = (window.screen ?? NSScreen.main)?.visibleFrame.size {
+            size.width = min(size.width, visible.width)
+            size.height = min(size.height, visible.height)
+        }
+        window.minSize = minimum
+        resizeRing?.minSize = minimum
         let top = window.frame.maxY
         let origin = NSPoint(x: window.frame.origin.x, y: top - size.height)
+        applyingFrame = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.22
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.setFrame(NSRect(origin: origin, size: size), display: true)
+        } completionHandler: { [weak self] in
+            self?.applyingFrame = false
         }
+    }
+
+    /// A drag on the resize ring is the person's choice: remember it, and when
+    /// the window is closed and opened again it comes back at that size.
+    func windowDidResize(_ notification: Notification) {
+        guard !applyingFrame, let window else { return }
+        let size = window.frame.size
+        if model.isExpanded {
+            expandedSize = size
+        } else {
+            compactSize = size
+        }
+        guard forcedSize == nil else { return }
+        scheduleSizeSave()
+    }
+
+    private func scheduleSizeSave() {
+        sizeSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveWindowSizes() }
+        sizeSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func saveWindowSizes() {
+        let defaults = FloatAppDelegate.sizeDefaults
+        defaults.set(Double(compactSize.width), forKey: FloatAppDelegate.compactWidthKey)
+        defaults.set(Double(compactSize.height), forKey: FloatAppDelegate.compactHeightKey)
+        defaults.set(Double(expandedSize.width), forKey: FloatAppDelegate.expandedWidthKey)
+        defaults.set(Double(expandedSize.height), forKey: FloatAppDelegate.expandedHeightKey)
+    }
+
+    private func loadWindowSizes() {
+        let defaults = FloatAppDelegate.sizeDefaults
+        func stored(_ widthKey: String, _ heightKey: String, fallback: NSSize, minimum: NSSize) -> NSSize {
+            guard let width = defaults.object(forKey: widthKey) as? Double,
+                  let height = defaults.object(forKey: heightKey) as? Double,
+                  width > 0, height > 0 else { return fallback }
+            return NSSize(
+                width: max(minimum.width, min(width, 4096)),
+                height: max(minimum.height, min(height, 4096))
+            )
+        }
+        compactSize = stored(FloatAppDelegate.compactWidthKey, FloatAppDelegate.compactHeightKey,
+                             fallback: FloatMetrics.compactDefault, minimum: FloatMetrics.compactMin)
+        expandedSize = stored(FloatAppDelegate.expandedWidthKey, FloatAppDelegate.expandedHeightKey,
+                              fallback: FloatMetrics.expandedDefault, minimum: FloatMetrics.expandedMin)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -1391,6 +1718,10 @@ final class FloatAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
     func applicationWillTerminate(_ notification: Notification) {
         signalSources.forEach { $0.cancel() }
+        sizeSave?.cancel()
+        // The process is on its way out, so the preference is written now
+        // rather than on the next idle turn.
+        if forcedSize == nil { saveWindowSizes() }
     }
 
     private func startReadingStandardInput() {
@@ -1475,11 +1806,35 @@ enum MomentsFloatMain {
 
         let application = NSApplication.shared
         let delegate = FloatAppDelegate()
+        // `--size 360x430` opens the card at a chosen size, so the narrow end of
+        // the layout can be looked at without dragging the window by hand. A
+        // size given this way is never written back as a preference.
+        if let size = MomentsFloatMain.requestedSize(from: CommandLine.arguments) {
+            delegate.forcedSize = size
+        }
         application.delegate = delegate
         application.setActivationPolicy(.accessory)
         withExtendedLifetime(delegate) {
             application.run()
         }
+    }
+
+    /// Read `--size WIDTHxHEIGHT`, clamped to something a window can show.
+    static func requestedSize(from arguments: [String]) -> NSSize? {
+        guard let index = arguments.firstIndex(of: "--size"), arguments.count > index + 1 else {
+            return nil
+        }
+        let parts = arguments[index + 1].lowercased().split(separator: "x")
+        guard parts.count == 2,
+              let width = Double(parts[0]),
+              let height = Double(parts[1]),
+              width >= Double(FloatMetrics.compactMin.width),
+              height >= Double(FloatMetrics.compactMin.height),
+              width <= 4096, height <= 4096
+        else {
+            return nil
+        }
+        return NSSize(width: width, height: height)
     }
 }
 
@@ -1704,6 +2059,41 @@ enum MomentsFloatSelfTest {
         closed.persistDraft(force: true)
         expect(closedDrafts.count == 1, "closing an empty window still tells the Host")
         expect(closedDrafts.first?["content"] as? String == "", "the empty draft clears the stored one")
+
+        // The window: the resized frame per edge, the toolbar fold per width,
+        // and the size check hook.
+        let base = NSRect(x: 100, y: 200, width: 420, height: 430)
+        let minimum = NSSize(width: 360, height: 300)
+        func frame(_ edge: ResizeEdge, dx: CGFloat, dy: CGFloat) -> NSRect {
+            FloatFrame.resized(base, edge: edge, delta: NSPoint(x: dx, y: dy), minSize: minimum)
+        }
+        expect(frame(.right, dx: 40, dy: 0) == NSRect(x: 100, y: 200, width: 460, height: 430), "the right edge grows the width")
+        expect(frame(.left, dx: -40, dy: 0) == NSRect(x: 60, y: 200, width: 460, height: 430), "the left edge moves the origin and grows")
+        expect(frame(.top, dx: 0, dy: 40) == NSRect(x: 100, y: 200, width: 420, height: 470), "the top edge grows the height")
+        expect(frame(.bottom, dx: 0, dy: -40) == NSRect(x: 100, y: 160, width: 420, height: 470), "the bottom edge moves the origin and grows")
+        expect(frame(.bottomRight, dx: 30, dy: -20) == NSRect(x: 100, y: 180, width: 450, height: 450), "the bottom right corner grows both ways")
+        expect(frame(.topLeft, dx: -30, dy: 20) == NSRect(x: 70, y: 200, width: 450, height: 450), "the top left corner grows away from the pointer")
+        expect(frame(.right, dx: -500, dy: 0).width == minimum.width, "a drag past the minimum stops at the minimum width")
+        expect(frame(.bottom, dx: 0, dy: 500).height == minimum.height, "a drag past the minimum stops at the minimum height")
+        let leftPast = frame(.left, dx: 500, dy: 0)
+        expect(leftPast.origin.x + leftPast.width == base.maxX, "a left drag keeps the right edge fixed")
+        let bottomPast = frame(.bottom, dx: 0, dy: 500)
+        expect(bottomPast.origin.y + bottomPast.height == base.maxY, "a bottom drag keeps the top edge fixed")
+
+        expect(FloatLayout.showsListButtons(rowWidth: FloatLayout.rowWidth(windowWidth: FloatMetrics.compactDefault.width)),
+               "the default card keeps the list buttons")
+        expect(!FloatLayout.showsListButtons(rowWidth: FloatLayout.rowWidth(windowWidth: 400)),
+               "a 400 point card folds the list buttons away")
+        expect(FloatLayout.showsLabels(rowWidth: FloatLayout.rowWidth(windowWidth: FloatMetrics.compactMin.width)),
+               "the narrowest card still shows the cancel and draft labels")
+        expect(!FloatLayout.showsLabels(rowWidth: 260), "a card narrower than the minimum drops the labels instead of wrapping them")
+        expect(FloatLayout.rowWidth(windowWidth: FloatMetrics.compactDefault.width) >= 330, "the default row is wide enough for every tool")
+
+        expect(MomentsFloatMain.requestedSize(from: ["moments-float", "--size", "360x430"]) == NSSize(width: 360, height: 430),
+               "the size check reads a size")
+        expect(MomentsFloatMain.requestedSize(from: ["moments-float", "--size", "10x10"]) == nil,
+               "the size check refuses what the window could not show")
+        expect(MomentsFloatMain.requestedSize(from: ["moments-float"]) == nil, "no size flag means no override")
 
         if failures.isEmpty {
             print("moments-float self-test: \(checkCount) checks passed")

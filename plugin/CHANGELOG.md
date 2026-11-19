@@ -1,5 +1,48 @@
 # Changelog
 
+## 3.7.3 — 2026-11-18
+
+The desktop float's footer broke its own labels in half — "Cancel" over "Cance /
+l", "Draft · 72" over two lines — and the window could not be resized at all.
+
+- The composer tool row is measured now, not guessed. Below 330 points of row
+  width the two list buttons fold into the format menu, below 270 points Cancel
+  becomes a glyph and the draft count steps aside, and every label is a single
+  line that keeps its width. The minimum card is 360 points wide, where the row
+  still fits with the labels on it.
+- The window resizes from its edges and bottom corners. A borderless window has
+  no frame to grab and the transparent margin around the card never receives the
+  mouse, so the resize ring is a plain view above the SwiftUI host: 10 points
+  inside the card's edge, with the resize cursor, a corner grip, and a pure frame
+  calculation behind it. The top edge stays with the header, which is the surface
+  that moves the window.
+- A resized card remembers its size per shape (compact 360×300 minimum, expanded
+  640×420), so folding and reopening no longer throws the size away.
+- The header drag hands the mouse-down to `performDrag` instead of moving the
+  frame itself, and answers the first click while another app is in front. The
+  old per-event `setFrameOrigin` routed every move through the app's layout and
+  each click that started with an activation only activated the window, which is
+  what made the card feel stuck.
+
+## 3.7.2 — 2026-11-16
+
+The panel read as pink, and the accent was to blame rather than the palette:
+ember was mixed into every surface at 1–10%, so a 3% wash of a warm red covered
+the whole window and the real accent had nowhere to stand.
+
+- Surfaces are neutral now. The canvas is a 4% grey step over the host base, a
+  card is the host base itself, hover and pressed step down to 8% and 14%, and
+  the rail is the host's own sidebar fill. No accent is mixed into a surface, so
+  light and dark both read grey instead of blush.
+- The ember stays an accent: the primary action, links, a pinned note's edge,
+  and the selected row — where the fill is neutral and the 2px rule carries the
+  colour. A tag inside a note is ember text, not an ember pill; an active tag row
+  gets the same neutral fill as the navigation.
+- The five navigation glyphs are redrawn as one family for the 16px rail: a page
+  for All notes, a bookmark for PinNotes, a clock for Daily review, a board for
+  Design, a bin for Trash. Same 1.8 stroke, same corner radius, none of them
+  borrowed from the formatting toolbar. The Moments mark itself is unchanged.
+
 ## 3.7.1 — 2026-11-12
 
 - The folded sidebar opens from the logo alone. The logo already was the way

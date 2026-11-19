@@ -1,7 +1,7 @@
 // Shown in the board menu. The contract test keeps it equal to package.json,
 // because "which build am I looking at?" is the first question when a fix does
 // not seem to have landed.
-const PLUGIN_VERSION = '3.7.1';
+const PLUGIN_VERSION = '3.7.3';
 
 window.__ModuleLoader__.load({
   id: 'dsh-moments-notes',
@@ -375,6 +375,15 @@ window.__ModuleLoader__.load({
       text: ['M4 6h16', 'M4 11h16', 'M4 16h11', 'M4 21h7'],
       markdown: ['M13 3H6v18h12V8z', 'M13 3v5h5', 'M12 11v6', 'M10 15l2 2 2-2'],
       check: ['M4 12.5l5 5L20 6.5'],
+      /* Navigation family, drawn for the 16px rail: one stroke weight, one
+         corner radius, and no glyph borrowed from the formatting toolbar. A
+         page for all notes, a bookmark for what is kept, a clock for the daily
+         return, a board for design, a bin for the trash. */
+      navNotes: ['M6.2 3.9h7.4l4.2 4.2v11.3a.8.8 0 0 1-.8.8H6.2a.8.8 0 0 1-.8-.8V4.7a.8.8 0 0 1 .8-.8z', 'M13.4 3.9v4.4h4.4', 'M8.4 12.4h6', 'M8.4 15.9h3.8'],
+      navPinned: ['M6.8 4.6h10.4v15.2l-5.2-3.8-5.2 3.8z'],
+      navReview: ['M12 4.6a7.4 7.4 0 1 1 0 14.8 7.4 7.4 0 0 1 0-14.8z', 'M12 8.2V12l2.9 1.7'],
+      navDesign: ['M4.6 5.4h14.8v13.2H4.6z', 'M4.6 10.2h14.8', 'M9.6 10.2v8.4'],
+      navTrash: ['M4.6 7h14.8', 'M9.4 7V4.7h5.2V7', 'M6.8 7l.7 12.1a1 1 0 0 0 1 .9h7a1 1 0 0 0 1-.9L17.2 7', 'M10.2 10.9v5.2', 'M13.8 10.9v5.2'],
       arrowRight: ['M5 12h14', 'M13 6l6 6-6 6'],
       canvas: ['M3.5 5.5h17v13h-17z', 'M7 9h5v4h-5z', 'M14 8.5h4.5v4.5h-4.5z'],
       pointer: ['M6 3.8l12.6 7.2-5.6 1.1-2.2 5.6z'],
@@ -8671,25 +8680,25 @@ function canvasNeedsFallbackFont(text) {
                 // The words are hidden when the rail is collapsed, so the name
                 // has to live on the button itself.
                 title: 'All notes', 'aria-label': `All notes (${activeCount})`,
-              }, h(Icon, { name: 'edit' }), h('span', null, 'All notes'), h('b', null, activeCount)),
+              }, h(Icon, { name: 'navNotes' }), h('span', null, 'All notes'), h('b', null, activeCount)),
               h('button', {
                 type: 'button', className: cx(mainMode === 'timeline' && activeView === 'pinned' && 'is-active'),
                 onClick: () => { setMainMode('timeline'); setActiveView('pinned'); },
                 title: 'PinNotes', 'aria-label': `PinNotes (${pinnedCount})`,
-              }, h(Icon, { name: 'pin' }), h('span', null, 'PinNotes'), h('b', null, pinnedCount)),
+              }, h(Icon, { name: 'navPinned' }), h('span', null, 'PinNotes'), h('b', null, pinnedCount)),
               h('button', {
                 type: 'button', className: cx(mainMode === 'review' && 'is-active'), onClick: () => setMainMode('review'),
                 title: 'Daily review', 'aria-label': 'Daily review',
-              }, h(Icon, { name: 'review' }), h('span', null, 'Daily review')),
+              }, h(Icon, { name: 'navReview' }), h('span', null, 'Daily review')),
               h('button', {
                 type: 'button', className: cx(mainMode === 'canvas' && 'is-active'), onClick: () => setMainMode('canvas'),
                 title: 'Design', 'aria-label': 'Design',
-              }, h(Icon, { name: 'canvas' }), h('span', null, 'Design')),
+              }, h(Icon, { name: 'navDesign' }), h('span', null, 'Design')),
               h('button', {
                 type: 'button', className: cx(mainMode === 'timeline' && activeView === 'trash' && 'is-active'),
                 onClick: () => { setMainMode('timeline'); setActiveView('trash'); },
                 title: 'Trash', 'aria-label': `Trash (${trashCount})`,
-              }, h(Icon, { name: 'trash' }), h('span', null, 'Trash'), h('b', null, trashCount))),
+              }, h(Icon, { name: 'navTrash' }), h('span', null, 'Trash'), h('b', null, trashCount))),
             sidebarCollapsed
               ? null
               : mainMode === 'canvas'
@@ -8856,10 +8865,14 @@ function canvasNeedsFallbackFont(text) {
          host theme; the plugin owns depth and identity, not the shell chrome. */
       .mm-app,.mm-float,.mm-panel-icon{
         --mm-accent-base:rgb(181 64 42);
-        --mm-surface-0:color-mix(in oklab,var(--dsw-alias-bg-base) 97%,var(--mm-accent-base) 3%);
-        --mm-surface-1:color-mix(in oklab,var(--dsw-alias-bg-base) 99%,var(--mm-accent-base) 1%);
-        --mm-surface-2:color-mix(in oklab,var(--dsw-alias-bg-base) 94%,var(--mm-accent-base) 6%);
-        --mm-surface-3:color-mix(in oklab,var(--dsw-alias-bg-base) 90%,var(--mm-accent-base) 10%);
+        /* Neutral surfaces: the ember is an accent, never the paper. Mixing it
+           into the canvas is what turned the whole panel pink — a 3% wash of a
+           warm red reads as a blush once it covers the window. Grey steps come
+           from the host's own label colour, so light and dark both resolve. */
+        --mm-surface-0:color-mix(in oklab,var(--dsw-alias-bg-base) 96%,var(--dsw-alias-label-primary) 4%);
+        --mm-surface-1:var(--dsw-alias-bg-base);
+        --mm-surface-2:color-mix(in oklab,var(--dsw-alias-bg-base) 92%,var(--dsw-alias-label-primary) 8%);
+        --mm-surface-3:color-mix(in oklab,var(--dsw-alias-bg-base) 86%,var(--dsw-alias-label-primary) 14%);
         --mm-overlay:var(--dsw-alias-bg-overlay);
         --mm-line:color-mix(in oklab,var(--dsw-alias-label-primary) 10%,transparent);
         --mm-line-strong:color-mix(in oklab,var(--dsw-alias-label-primary) 17%,transparent);
@@ -8896,7 +8909,7 @@ function canvasNeedsFallbackFont(text) {
       }
       body[data-ds-dark-theme] .mm-app,body[data-ds-dark-theme] .mm-float,body[data-ds-dark-theme] .mm-panel-icon{
         --mm-accent-base:rgb(228 100 74);
-        --mm-surface-0:color-mix(in oklab,var(--dsw-alias-bg-base) 96%,var(--mm-accent-base) 4%);
+        --mm-surface-0:var(--dsw-alias-bg-base);
         --mm-surface-1:color-mix(in oklab,var(--dsw-alias-bg-base) 92%,var(--dsw-alias-label-primary) 8%);
         --mm-surface-2:color-mix(in oklab,var(--dsw-alias-bg-base) 87%,var(--dsw-alias-label-primary) 13%);
         --mm-surface-3:color-mix(in oklab,var(--dsw-alias-bg-base) 82%,var(--dsw-alias-label-primary) 18%);
@@ -8927,7 +8940,7 @@ function canvasNeedsFallbackFont(text) {
       .mm-icon{display:inline-block;flex:none;vertical-align:middle}
       .mm-shell{display:grid;grid-template-columns:var(--mm-side-width,200px) minmax(0,1fr);height:100%;min-height:0}
       .mm-shell.is-collapsed{--mm-side-width:56px}
-      .mm-left{display:flex;flex-direction:column;min-height:0;overflow-y:auto;padding:20px 12px 16px;border-right:1px solid var(--mm-line);background:color-mix(in oklab,var(--dsw-specific-sidebar-fill) 97%,var(--mm-accent-base) 3%)}
+      .mm-left{display:flex;flex-direction:column;min-height:0;overflow-y:auto;padding:20px 12px 16px;border-right:1px solid var(--mm-line);background:var(--dsw-specific-sidebar-fill)}
       .mm-left.is-collapsed{align-items:center;padding:14px 0 16px;overflow:hidden}
       /* 折叠成图标栏：每个入口留一个 32px 的方块，名字靠 title 与 aria-label。 */
       .mm-left.is-collapsed .mm-nav{gap:4px;width:100%;align-items:center;margin-top:8px}
@@ -8948,7 +8961,11 @@ function canvasNeedsFallbackFont(text) {
       .mm-nav{display:flex;flex-direction:column;gap:4px}
       .mm-nav button{position:relative;display:flex;align-items:center;gap:8px;width:100%;min-height:36px;padding:8px 12px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);text-align:left;cursor:pointer;transition:background-color 100ms ease,color 100ms ease}
       .mm-nav button:hover{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
-      .mm-nav button.is-active{background:var(--mm-accent-soft);color:var(--mm-accent-ink);font-weight:600}
+      .mm-nav button.is-active{background:var(--mm-surface-2);color:var(--mm-accent-ink);font-weight:600}
+      /* The rule is the whole selected state: no tinted block, so the rail keeps
+         one surface and the ember stays an accent. */
+      .mm-nav button.is-active:before{content:"";position:absolute;left:0;top:50%;width:2px;height:16px;margin-top:-8px;border-radius:999px;background:var(--mm-accent-base)}
+      .mm-left.is-collapsed .mm-nav button.is-active:before{display:none}
       .mm-nav button span{flex:1}
       .mm-nav button b{min-width:20px;font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;text-align:right}
       .mm-sidebar-tags{margin-top:32px;min-height:0}
@@ -8962,7 +8979,7 @@ function canvasNeedsFallbackFont(text) {
       .mm-tag-chevron.is-open{transform:rotate(90deg)}
       .mm-tag-button{display:flex;align-items:center;gap:8px;min-width:0;min-height:32px;flex:1;padding:4px 8px 4px 0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;text-align:left;transition:background-color 100ms ease,color 100ms ease}
       .mm-tag-button:hover{background:var(--mm-surface-2);color:var(--dsw-alias-label-primary)}
-      .mm-tag-button.is-active{background:var(--mm-accent-soft);color:var(--mm-accent-ink);font-weight:500}
+      .mm-tag-button.is-active{background:var(--mm-surface-2);color:var(--mm-accent-ink);font-weight:500}
       .mm-tag-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .mm-tag-name:before{content:"#";margin-right:4px;color:var(--dsw-alias-label-secondary)}
       .mm-tag-count{font-size:12px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
@@ -9100,7 +9117,7 @@ function canvasNeedsFallbackFont(text) {
       .mm-inline-code{padding:1px 4px;border-radius:var(--dsw-radius-xs);background:var(--mm-surface-2);color:var(--dsw-alias-label-primary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em}
       .mm-inline-link{color:var(--mm-accent-ink);text-decoration:none;overflow-wrap:anywhere}
       .mm-inline-link:hover{text-decoration:underline}
-      .mm-inline-tag{display:inline;padding:1px 4px;border:0;border-radius:var(--dsw-radius-xs);background:var(--mm-accent-soft);color:var(--mm-accent-ink);cursor:pointer;font:inherit;line-height:inherit}
+      .mm-inline-tag{display:inline;padding:0;border:0;border-radius:0;background:transparent;color:var(--mm-accent-ink);cursor:pointer;font:inherit;line-height:inherit}
       .mm-inline-tag:hover{text-decoration:underline}
       .mm-expand-button{min-height:28px;margin:8px 0 0;padding:4px 0;border:0;background:transparent;color:var(--mm-accent-ink);cursor:pointer;font-size:12px;font-weight:500}
       .mm-note-images{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px;margin-top:16px}
